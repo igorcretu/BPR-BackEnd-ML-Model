@@ -1,0 +1,61 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Model files (large binary files)
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.pth
+
+# Data files (should be in scraped_data/ if needed)
+*.csv
+!bilbasen_car_urls.csv
+*.xlsx
+*.json
+!model_results/*.json
+
+# Logs
+*.log
+*.out
+
+# CatBoost specific
+catboost_info/
+metainfo.json
+
+# Scraped data (too large for git)
+scraped_data/*.csv
+!scraped_data/.gitkeep
+
+# Database credentials
+.env
+config.ini
+
+# Temporary files
+tmp/
+temp/
+*.tmp
