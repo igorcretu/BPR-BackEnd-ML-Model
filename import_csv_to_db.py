@@ -9,6 +9,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 from dotenv import load_dotenv
 import uuid
+from datetime import datetime
 
 load_dotenv()
 
@@ -36,8 +37,9 @@ def import_csv_to_db(csv_path):
     
     inserted = 0
     skipped = 0
+    errors = []
     
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         try:
             # Generate UUID if not present
             car_id = str(uuid.uuid4())
@@ -78,17 +80,28 @@ def import_csv_to_db(csv_path):
                 row.get('dealer_name')
             ))
             
+            # Commit after each successful insert
+            conn.commit()
+            
             if cur.rowcount > 0:
                 inserted += 1
             else:
                 skipped += 1
                 
+            # Progress indicator every 100 rows
+            if (idx + 1) % 100 == 0:
+                print(f"  Progress: {idx + 1}/{len(df)} rows processed...")
+                
         except Exception as e:
-            print(f"⚠️  Error on row {_}: {e}")
+            # Rollback the failed transaction
+            conn.rollback()
+            error_msg = f"Row {idx + 1}: {str(e)[:100]}"
+            errors.append(error_msg)
+            if len(errors) <= 10:  # Only print first 10 errors
+                print(f"⚠️  {error_msg}")
             skipped += 1
             continue
     
-    conn.commit()
     cur.close()
     conn.close()
     
@@ -96,6 +109,9 @@ def import_csv_to_db(csv_path):
     print(f"   Inserted: {inserted}")
     print(f"   Skipped: {skipped}")
     print(f"   Total: {len(df)}")
+    
+    if len(errors) > 10:
+        print(f"\n⚠️  {len(errors)} total errors (showing first 10 above)")
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
