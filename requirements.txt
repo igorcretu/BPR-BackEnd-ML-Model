@@ -12,3 +12,11 @@ selenium>=4.15.0
 matplotlib>=3.8.0
 seaborn>=0.13.0
 openpyxl>=3.1.0
+python-dotenv>=1.0.0
+joblib>=1.3.0
+scipy>=1.11.0
+
+# Optional: PyTorch for RNN models
+# Install with: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# or for GPU: pip install torch torchvision torchaudio
+torch>=2.0.0
