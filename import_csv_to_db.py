@@ -291,6 +291,14 @@ def import_csv_to_db(csv_path):
     
     for idx, car in enumerate(cars_data):
         try:
+            # Check if already exists
+            cur.execute("SELECT id FROM cars WHERE external_id = %s", (car['external_id'],))
+            if cur.fetchone():
+                duplicates += 1
+                if (idx + 1) % 500 == 0:
+                    print(f"  Imported {idx + 1}/{len(cars_data)} rows...")
+                continue
+            
             cur.execute("""
                 INSERT INTO cars (
                     external_id, url, brand, model, variant, title, description,
@@ -310,7 +318,6 @@ def import_csv_to_db(csv_path):
                     %(range_km)s, %(battery_capacity)s, %(source_url)s,
                     %(location)s, %(dealer_name)s
                 )
-                ON CONFLICT (external_id) DO NOTHING
             """, car)
             
             conn.commit()
