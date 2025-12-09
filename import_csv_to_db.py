@@ -328,7 +328,7 @@ def import_csv_to_db(csv_path):
                     fuel_type, transmission, body_type, horsepower,
                     acceleration, top_speed, drive_type, doors, seats,
                     color, equipment, abs_brakes, esp, weight, trunk_size,
-                    range_km, battery_capacity, image_path,
+                    range_km, battery_capacity, image_path, image_downloaded,
                     source_url, location, dealer_name
                 ) VALUES (
                     %(external_id)s, %(url)s, %(brand)s, %(model)s, %(variant)s,
@@ -338,7 +338,7 @@ def import_csv_to_db(csv_path):
                     %(acceleration)s, %(top_speed)s, %(drive_type)s,
                     %(doors)s, %(seats)s, %(color)s, %(equipment)s,
                     %(abs_brakes)s, %(esp)s, %(weight)s, %(trunk_size)s,
-                    %(range_km)s, %(battery_capacity)s, %(image_path)s,
+                    %(range_km)s, %(battery_capacity)s, %(image_path)s, %(image_downloaded)s,
                     %(source_url)s, %(location)s, %(dealer_name)s
                 )
             """, car)
