@@ -26,11 +26,23 @@ def clean_price(price_str):
 
 def clean_numeric(value_str, suffix=''):
     """Clean numeric values with optional suffix like 'km', 'hk'"""
-    if pd.isna(value_str) or value_str == '':
+    if pd.isna(value_str) or value_str == '' or value_str == '-':
         return None
     value_str = str(value_str).replace(suffix, '').replace('.', '').replace(',', '.').strip()
     try:
         return int(float(value_str))
+    except:
+        return None
+
+
+def clean_float(value_str):
+    """Clean float values like '14,0 kWh' or '-'"""
+    if pd.isna(value_str) or value_str == '' or value_str == '-':
+        return None
+    # Remove units and clean
+    value_str = str(value_str).replace('kWh', '').replace('kwh', '').replace(',', '.').strip()
+    try:
+        return float(value_str)
     except:
         return None
 
@@ -208,8 +220,7 @@ def import_csv_to_db(csv_path):
                 horsepower = clean_numeric(row.get('attr_power_hp'))
             
             # Numeric fields
-            acceleration_val = row.get('attr_acceleration_0_100')
-            acceleration = float(acceleration_val) if pd.notna(acceleration_val) and acceleration_val != '' else None
+            acceleration = clean_float(row.get('attr_acceleration_0_100'))
             top_speed = clean_numeric(row.get('attr_top_speed_kmh'))
             doors = clean_numeric(row.get('model_doors'))
             if doors and (doors < 2 or doors > 5):
@@ -217,12 +228,16 @@ def import_csv_to_db(csv_path):
             
             # Battery/EV fields
             range_km = clean_numeric(row.get('details_range_km'))
-            battery_val = row.get('details_battery_capacity_kwh')
-            battery_capacity = float(battery_val) if pd.notna(battery_val) and battery_val != '' else None
+            battery_capacity = clean_float(row.get('details_battery_capacity_kwh'))
             
             # Other fields
             color = safe_value(row.get('attr_color'))
             equipment = safe_value(row.get('equipment'))
+            
+            # Image fields
+            image_filename = safe_value(row.get('image_filename'))
+            image_path = f"images/{image_filename}" if image_filename else None
+            image_url = safe_value(row.get('image_url'))
             
             # Booleans
             abs_brakes = clean_boolean(row.get('model_abs_brakes'))
@@ -263,6 +278,8 @@ def import_csv_to_db(csv_path):
                 'trunk_size': trunk_size,
                 'range_km': range_km,
                 'battery_capacity': battery_capacity,
+                'image_path': image_path,
+                'image_url': image_url,
                 'source_url': url,
                 'location': None,
                 'dealer_name': safe_value(row.get('seller_name'))
@@ -309,7 +326,8 @@ def import_csv_to_db(csv_path):
                     fuel_type, transmission, body_type, horsepower,
                     acceleration, top_speed, drive_type, doors, seats,
                     color, equipment, abs_brakes, esp, weight, trunk_size,
-                    range_km, battery_capacity, source_url, location, dealer_name
+                    range_km, battery_capacity, image_path, image_url,
+                    source_url, location, dealer_name
                 ) VALUES (
                     %(external_id)s, %(url)s, %(brand)s, %(model)s, %(variant)s,
                     %(title)s, %(description)s, %(price)s, %(new_price)s,
@@ -318,8 +336,8 @@ def import_csv_to_db(csv_path):
                     %(acceleration)s, %(top_speed)s, %(drive_type)s,
                     %(doors)s, %(seats)s, %(color)s, %(equipment)s,
                     %(abs_brakes)s, %(esp)s, %(weight)s, %(trunk_size)s,
-                    %(range_km)s, %(battery_capacity)s, %(source_url)s,
-                    %(location)s, %(dealer_name)s
+                    %(range_km)s, %(battery_capacity)s, %(image_path)s, %(image_url)s,
+                    %(source_url)s, %(location)s, %(dealer_name)s
                 )
             """, car)
             
