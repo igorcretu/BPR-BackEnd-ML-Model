@@ -140,7 +140,8 @@ def safe_value(val):
         return int(val) if isinstance(val, np.integer) else float(val)
     if val == '' or str(val).lower() == 'nan':
         return None
-    return val
+    # Convert to string for text fields
+    return str(val) if val is not None else None
 
 
 def import_csv_to_db(csv_path):
@@ -169,7 +170,7 @@ def import_csv_to_db(csv_path):
         try:
             # Extract and clean basic info
             url = safe_value(row.get('url'))
-            external_id = safe_value(row.get('external_id'))
+            external_id = str(row.get('external_id')) if pd.notna(row.get('external_id')) else None
             brand = safe_value(row.get('brand'))
             model = safe_value(row.get('model'))
             
@@ -207,7 +208,8 @@ def import_csv_to_db(csv_path):
                 horsepower = clean_numeric(row.get('attr_power_hp'))
             
             # Numeric fields
-            acceleration = safe_value(row.get('attr_acceleration_0_100'))
+            acceleration_val = row.get('attr_acceleration_0_100')
+            acceleration = float(acceleration_val) if pd.notna(acceleration_val) and acceleration_val != '' else None
             top_speed = clean_numeric(row.get('attr_top_speed_kmh'))
             doors = clean_numeric(row.get('model_doors'))
             if doors and (doors < 2 or doors > 5):
@@ -215,7 +217,8 @@ def import_csv_to_db(csv_path):
             
             # Battery/EV fields
             range_km = clean_numeric(row.get('details_range_km'))
-            battery_capacity = safe_value(row.get('details_battery_capacity_kwh'))
+            battery_val = row.get('details_battery_capacity_kwh')
+            battery_capacity = float(battery_val) if pd.notna(battery_val) and battery_val != '' else None
             
             # Other fields
             color = safe_value(row.get('attr_color'))
