@@ -236,7 +236,10 @@ def import_csv_to_db(csv_path):
             
             # Image fields
             image_filename = safe_value(row.get('image_filename'))
-            image_path = f"images/{image_filename}" if image_filename else None
+            if image_filename and pd.notna(image_filename) and str(image_filename).strip():
+                image_path = f"images/{image_filename}"
+            else:
+                image_path = None
             
             # Booleans
             abs_brakes = clean_boolean(row.get('model_abs_brakes'))
