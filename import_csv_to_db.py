@@ -281,6 +281,7 @@ def import_csv_to_db(csv_path):
                 'range_km': range_km,
                 'battery_capacity': battery_capacity,
                 'image_path': image_path,
+                'image_downloaded': True if image_path else False,
                 'source_url': url,
                 'location': None,
                 'dealer_name': safe_value(row.get('seller_name'))
