@@ -450,7 +450,11 @@ class BilbasenScraper:
         if not image_url:
             return False
         try:
-            response = self.session.get(image_url, headers=get_headers(), timeout=30, stream=True)
+            # Create session for this thread
+            session = requests.Session()
+            session.headers.update(get_headers())
+            
+            response = session.get(image_url, timeout=30, stream=True)
             response.raise_for_status()
             with open(save_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):

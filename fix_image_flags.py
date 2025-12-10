@@ -11,7 +11,7 @@ from psycopg2.extras import RealDictCursor
 DB_CONFIG = {
     'dbname': os.getenv('DB_NAME', 'car_prediction'),
     'user': os.getenv('DB_USER', 'bpr_user'),
-    'password': os.getenv('DB_PASS', 'bpr_password'),
+    'password': os.getenv('DB_PASS', os.getenv('POSTGRES_PASSWORD', 'your_secure_password')),
     'host': os.getenv('DB_HOST', 'localhost'),
     'port': os.getenv('DB_PORT', '5432')
 }
