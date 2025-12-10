@@ -82,6 +82,168 @@ IMAGES_DIR = os.path.join(OUTPUT_DIR, 'images')
 MAX_WORKERS = 16  # Parallel workers for detail scraping
 
 
+# ============================================================================
+# Data Cleaning Functions (matching import_csv_to_db.py)
+# ============================================================================
+
+def clean_price(price_str):
+    """Clean Danish price format: '38.900 kr.' -> 38900"""
+    if not price_str or price_str == '' or price_str == '-':
+        return None
+    price_str = str(price_str).replace(' kr.', '').replace('.', '').replace(',', '.').strip()
+    try:
+        return float(price_str)
+    except:
+        return None
+
+
+def clean_numeric(value_str, suffix=''):
+    """Clean numeric values with optional suffix like 'km', 'hk', 'km/h', 'km/t'"""
+    if not value_str or value_str == '' or value_str == '-':
+        return None
+    value_str = str(value_str).replace(suffix, '').replace('km/t', '').replace('km/h', '').replace('kmh', '').replace('kg', '').replace('cm', '').strip()
+    value_str = value_str.replace('.', '').replace(',', '.')
+    try:
+        return int(float(value_str))
+    except:
+        return None
+
+
+def clean_float(value_str):
+    """Clean float values like '14,0 kWh' or '10.7 sec' or '14,7 sek.' or '-'"""
+    if not value_str or value_str == '' or value_str == '-':
+        return None
+    value_str = str(value_str).replace('kWh', '').replace('kwh', '').replace('sek.', '').replace('sek', '').replace('sec', '').replace(',', '.').strip()
+    try:
+        return float(value_str)
+    except:
+        return None
+
+
+def standardize_fuel_type(fuel):
+    """Standardize fuel types to 7 categories"""
+    if not fuel or fuel == '':
+        return None
+    
+    fuel_normalized = str(fuel).strip().lower().replace('-', '').replace(' ', '')
+    fuel_original = str(fuel).strip().lower()
+    
+    if fuel_normalized in ['el', 'electricity', 'electric']:
+        return 'Electricity'
+    if fuel_normalized in ['benzin', 'petrol', 'gasoline'] and 'hybrid' not in fuel_original:
+        return 'Petrol'
+    if fuel_normalized == 'diesel' and 'hybrid' not in fuel_original:
+        return 'Diesel'
+    if 'plugin' in fuel_normalized or 'pluginhybrid' in fuel_normalized:
+        return 'Plug-in Hybrid - Diesel' if 'diesel' in fuel_original else 'Plug-in Hybrid - Petrol'
+    if 'hybrid' in fuel_original:
+        return 'Hybrid - Diesel' if 'diesel' in fuel_original else 'Hybrid - Petrol'
+    
+    return 'Petrol'  # Default
+
+
+def standardize_transmission(trans, fuel_type):
+    """Standardize transmission types"""
+    if not trans or trans == '' or trans == '-':
+        return 'Automatic' if fuel_type == 'Electricity' else None
+    
+    trans_lower = str(trans).strip().lower()
+    if trans_lower in ['automatgear', 'automatic', 'automatisk', 'auto', 'automat', 'a']:
+        return 'Automatic'
+    if trans_lower in ['manuel', 'manual', 'manuell', 'manuelt', 'm']:
+        return 'Manual'
+    
+    return 'Manual'  # Default
+
+
+def standardize_body_type(body):
+    """Standardize body types"""
+    if not body or body == '':
+        return None
+    
+    mapping = {
+        'suv': 'SUV', 'cuv': 'SUV',
+        'sedan': 'Sedan',
+        'stationcar': 'Station Wagon', 'station wagon': 'Station Wagon', 'st.car': 'Station Wagon',
+        'hatchback': 'Hatchback', 'halvkombi': 'Hatchback', 'mikro': 'Hatchback',
+        'coupé': 'Coupe', 'coupe': 'Coupe',
+        'cabriolet': 'Cabriolet', 'kabrio': 'Cabriolet',
+        'minibus': 'Van', 'van': 'Van', 'mpv': 'Van', 'kassevogn': 'Van', 'wagon': 'Van',
+        'pickup': 'Pickup', 'pick-up': 'Pickup', '4x4': 'Pickup'
+    }
+    
+    body_lower = str(body).strip().lower()
+    return mapping.get(body_lower, str(body).strip())
+
+
+def standardize_drive_type(drive):
+    """Standardize drive types"""
+    if not drive or drive == '':
+        return None
+    
+    mapping = {
+        'forhjulstræk': 'Front-Wheel Drive', 'front-wheel drive': 'Front-Wheel Drive', 'fwd': 'Front-Wheel Drive',
+        'baghjulstræk': 'Rear-Wheel Drive', 'rear-wheel drive': 'Rear-Wheel Drive', 'rwd': 'Rear-Wheel Drive',
+        'firehjulstræk': 'All-Wheel Drive', 'all-wheel drive': 'All-Wheel Drive', 
+        'awd': 'All-Wheel Drive', '4wd': 'All-Wheel Drive', '4x4': 'All-Wheel Drive'
+    }
+    
+    drive_lower = str(drive).strip().lower()
+    return mapping.get(drive_lower, str(drive).strip())
+
+
+def extract_horsepower(power_str):
+    """Extract horsepower from format like '50 hk/-' or '178 hk/230 nm'"""
+    if not power_str or power_str == '':
+        return None
+    match = re.search(r'(\d+)\s*hk', str(power_str))
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def extract_torque(power_str):
+    """Extract torque from format like '178 hk/230 nm'"""
+    if not power_str or power_str == '':
+        return None
+    match = re.search(r'(\d+)\s*nm', str(power_str).lower())
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def extract_engine_size(power_str):
+    """Extract engine size from power string if present like '1.6 L'"""
+    if not power_str or power_str == '':
+        return None
+    match = re.search(r'(\d+[.,]\d+)\s*[lL]', str(power_str))
+    if match:
+        return float(match.group(1).replace(',', '.'))
+    return None
+
+
+def clean_boolean(value):
+    """Convert various boolean representations"""
+    if not value or value == '':
+        return None
+    value_lower = str(value).strip().lower()
+    if value_lower in ['ja', 'yes', 'true', '1']:
+        return True
+    if value_lower in ['nej', 'no', 'false', '0']:
+        return False
+    return None
+
+
+def safe_value(val):
+    """Convert empty/null values to None"""
+    if not val or val == '' or val == '-':
+        return None
+    val_str = str(val).strip()
+    if val_str == '' or val_str.lower() == 'nan':
+        return None
+    return val_str
+
+
 class AutoScraper:
     def __init__(self, mode='incremental', download_images=True):
         self.mode = mode
@@ -360,45 +522,233 @@ class AutoScraper:
             logger.error(f"❌ Error checking car existence: {e}")
             return None
     
-    def upsert_car(self, car_data):
-        """Insert or update car in database"""
+    def upsert_car(self, raw_data):
+        """Insert or update car in database with full data cleaning (matches import_csv_to_db.py)"""
         try:
             # Check if car exists
-            car_id = self.check_car_exists(car_data.get('external_id'))
+            external_id = raw_data.get('external_id')
+            car_id = self.check_car_exists(external_id)
             
             if car_id:
-                # Update existing car
                 with self.lock:
                     self.cars_updated += 1
-                logger.debug(f"🔄 Updating car {car_data.get('external_id')}")
+                logger.debug(f"🔄 Updating car {external_id}")
             else:
-                # Insert new car
-                car_data['id'] = str(uuid.uuid4())
                 with self.lock:
                     self.cars_new += 1
-                logger.debug(f"➕ Inserting new car {car_data.get('external_id')}")
+                logger.debug(f"➕ Inserting new car {external_id}")
             
-            # Build UPSERT query (simplified version - full implementation would include all fields)
-            columns = list(car_data.keys())
-            values = [car_data[col] for col in columns]
+            # Clean and standardize data (matching import_csv_to_db.py logic)
+            price = clean_price(raw_data.get('price'))
+            if not price or price <= 0:
+                logger.warning(f"⚠️ Skipping {external_id}: invalid price")
+                return False
             
-            placeholders = ', '.join(['%s'] * len(columns))
-            columns_str = ', '.join(columns)
-            update_str = ', '.join([f"{col} = EXCLUDED.{col}" for col in columns if col not in ['id', 'external_id']])
+            # Extract basic info
+            url = raw_data.get('url')
+            brand = safe_value(raw_data.get('brand'))
+            model = safe_value(raw_data.get('model'))
+            variant = safe_value(raw_data.get('variant'))
+            title = safe_value(raw_data.get('title'))
+            description = safe_value(raw_data.get('description'))
             
-            query = f"""
-                INSERT INTO cars ({columns_str})
-                VALUES ({placeholders})
+            # Standardize fuel type first (needed for transmission default)
+            fuel_type = standardize_fuel_type(raw_data.get('fuel_type'))
+            
+            # Other details
+            new_price = clean_price(raw_data.get('new_price'))
+            model_year = clean_numeric(raw_data.get('model_year'))
+            year = model_year
+            mileage = clean_numeric(raw_data.get('mileage_km'), ' km')
+            
+            transmission = standardize_transmission(raw_data.get('geartype') or raw_data.get('transmission'), fuel_type)
+            body_type = standardize_body_type(raw_data.get('body_type'))
+            drive_type = standardize_drive_type(raw_data.get('drive_type'))
+            
+            # Power fields
+            power_str = raw_data.get('power_hp_nm')
+            horsepower = extract_horsepower(power_str)
+            torque_nm = extract_torque(power_str)
+            engine_size = extract_engine_size(power_str)
+            
+            # Performance
+            acceleration = clean_float(raw_data.get('acceleration_0_100'))
+            top_speed = clean_numeric(raw_data.get('top_speed'))
+            
+            # Body fields
+            doors = clean_numeric(raw_data.get('doors'))
+            if doors and (doors < 2 or doors > 5):
+                doors = 4
+            seats = 5  # Default
+            gear_count = clean_numeric(raw_data.get('gear_count'))
+            cylinders = clean_numeric(raw_data.get('cylinders'))
+            
+            # Registration
+            first_registration = safe_value(raw_data.get('first_registration'))
+            production_date = safe_value(raw_data.get('production_date'))
+            
+            # EV/Battery fields
+            range_km = clean_numeric(raw_data.get('range_km'))
+            battery_capacity = clean_float(raw_data.get('battery_capacity_kwh'))
+            energy_consumption = clean_numeric(raw_data.get('energy_consumption'))
+            home_charging_ac = safe_value(raw_data.get('home_charging_ac'))
+            fast_charging_dc = safe_value(raw_data.get('fast_charging_dc'))
+            charging_time_dc = safe_value(raw_data.get('charging_time_dc'))
+            
+            # Fuel consumption and emissions
+            fuel_consumption = safe_value(raw_data.get('fuel_consumption'))
+            co2_emission = safe_value(raw_data.get('co2_emission'))
+            euro_norm = safe_value(raw_data.get('euro_norm'))
+            tank_capacity = clean_numeric(raw_data.get('tank_capacity'))
+            
+            # Other fields
+            color = safe_value(raw_data.get('color'))
+            equipment = safe_value(raw_data.get('equipment'))
+            category = safe_value(raw_data.get('category'))
+            periodic_tax = safe_value(raw_data.get('periodic_tax'))
+            
+            # Image fields
+            image_filename = raw_data.get('image_filename')
+            image_path = f"images/{image_filename}" if image_filename else None
+            image_downloaded = bool(image_filename)
+            
+            # Booleans
+            abs_brakes = clean_boolean(raw_data.get('abs_brakes'))
+            esp = clean_boolean(raw_data.get('esp'))
+            airbags = clean_numeric(raw_data.get('airbags'))
+            
+            # Dimensions
+            weight = clean_numeric(raw_data.get('weight'))
+            width = clean_numeric(raw_data.get('width'))
+            length = clean_numeric(raw_data.get('length'))
+            height = clean_numeric(raw_data.get('height'))
+            trunk_size = clean_numeric(raw_data.get('trunk_size'))
+            load_capacity = clean_numeric(raw_data.get('load_capacity'))
+            towing_capacity = clean_numeric(raw_data.get('towing_capacity'))
+            max_towing_weight = clean_numeric(raw_data.get('max_towing_weight'))
+            
+            # Location
+            seller_city = safe_value(raw_data.get('seller_city'))
+            seller_zipcode = safe_value(raw_data.get('seller_zipcode'))
+            if seller_city and seller_zipcode:
+                location = f"{seller_city}, {seller_zipcode}"
+            elif seller_city:
+                location = seller_city
+            else:
+                location = None
+            
+            dealer_name = safe_value(raw_data.get('seller_name') or raw_data.get('dealer_name'))
+            
+            # Execute INSERT (same as import_csv_to_db.py)
+            self.cur.execute("""
+                INSERT INTO cars (
+                    external_id, url, brand, model, variant, title, description,
+                    price, new_price, model_year, year, first_registration, production_date,
+                    mileage, fuel_type, transmission, gear_count, cylinders,
+                    body_type, horsepower, torque_nm, engine_size,
+                    acceleration, top_speed, drive_type, doors, seats,
+                    color, category, equipment, abs_brakes, esp, airbags,
+                    weight, width, length, height, trunk_size, load_capacity,
+                    towing_capacity, max_towing_weight,
+                    range_km, battery_capacity, energy_consumption,
+                    home_charging_ac, fast_charging_dc, charging_time_dc,
+                    fuel_consumption, co2_emission, euro_norm, tank_capacity,
+                    periodic_tax, image_path, image_downloaded,
+                    source_url, location, dealer_name
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s,
+                    %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s
+                )
                 ON CONFLICT (external_id)
-                DO UPDATE SET {update_str}, updated_at = NOW()
-            """
+                DO UPDATE SET
+                    url = EXCLUDED.url,
+                    brand = EXCLUDED.brand,
+                    model = EXCLUDED.model,
+                    variant = EXCLUDED.variant,
+                    title = EXCLUDED.title,
+                    description = EXCLUDED.description,
+                    price = EXCLUDED.price,
+                    new_price = EXCLUDED.new_price,
+                    model_year = EXCLUDED.model_year,
+                    year = EXCLUDED.year,
+                    first_registration = EXCLUDED.first_registration,
+                    production_date = EXCLUDED.production_date,
+                    mileage = EXCLUDED.mileage,
+                    fuel_type = EXCLUDED.fuel_type,
+                    transmission = EXCLUDED.transmission,
+                    gear_count = EXCLUDED.gear_count,
+                    cylinders = EXCLUDED.cylinders,
+                    body_type = EXCLUDED.body_type,
+                    horsepower = EXCLUDED.horsepower,
+                    torque_nm = EXCLUDED.torque_nm,
+                    engine_size = EXCLUDED.engine_size,
+                    acceleration = EXCLUDED.acceleration,
+                    top_speed = EXCLUDED.top_speed,
+                    drive_type = EXCLUDED.drive_type,
+                    doors = EXCLUDED.doors,
+                    seats = EXCLUDED.seats,
+                    color = EXCLUDED.color,
+                    category = EXCLUDED.category,
+                    equipment = EXCLUDED.equipment,
+                    abs_brakes = EXCLUDED.abs_brakes,
+                    esp = EXCLUDED.esp,
+                    airbags = EXCLUDED.airbags,
+                    weight = EXCLUDED.weight,
+                    width = EXCLUDED.width,
+                    length = EXCLUDED.length,
+                    height = EXCLUDED.height,
+                    trunk_size = EXCLUDED.trunk_size,
+                    load_capacity = EXCLUDED.load_capacity,
+                    towing_capacity = EXCLUDED.towing_capacity,
+                    max_towing_weight = EXCLUDED.max_towing_weight,
+                    range_km = EXCLUDED.range_km,
+                    battery_capacity = EXCLUDED.battery_capacity,
+                    energy_consumption = EXCLUDED.energy_consumption,
+                    home_charging_ac = EXCLUDED.home_charging_ac,
+                    fast_charging_dc = EXCLUDED.fast_charging_dc,
+                    charging_time_dc = EXCLUDED.charging_time_dc,
+                    fuel_consumption = EXCLUDED.fuel_consumption,
+                    co2_emission = EXCLUDED.co2_emission,
+                    euro_norm = EXCLUDED.euro_norm,
+                    tank_capacity = EXCLUDED.tank_capacity,
+                    periodic_tax = EXCLUDED.periodic_tax,
+                    image_path = EXCLUDED.image_path,
+                    image_downloaded = EXCLUDED.image_downloaded,
+                    location = EXCLUDED.location,
+                    dealer_name = EXCLUDED.dealer_name,
+                    updated_at = NOW()
+            """, (
+                external_id, url, brand, model, variant, title, description,
+                price, new_price, model_year, year, first_registration, production_date,
+                mileage, fuel_type, transmission, gear_count, cylinders,
+                body_type, horsepower, torque_nm, engine_size,
+                acceleration, top_speed, drive_type, doors, seats,
+                color, category, equipment, abs_brakes, esp, airbags,
+                weight, width, length, height, trunk_size, load_capacity,
+                towing_capacity, max_towing_weight,
+                range_km, battery_capacity, energy_consumption,
+                home_charging_ac, fast_charging_dc, charging_time_dc,
+                fuel_consumption, co2_emission, euro_norm, tank_capacity,
+                periodic_tax, image_path, image_downloaded,
+                url, location, dealer_name
+            ))
             
-            self.cur.execute(query, values)
             self.conn.commit()
             return True
             
         except Exception as e:
-            logger.error(f"❌ Error upserting car: {e}")
+            logger.error(f"❌ Error upserting car {external_id}: {e}")
             self.conn.rollback()
             return False
     
