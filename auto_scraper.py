@@ -33,6 +33,7 @@ from psycopg2.extras import execute_values
 from datetime import datetime
 import uuid
 import re
+import json
 from dotenv import load_dotenv
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -317,7 +318,7 @@ class AutoScraper:
         return None
     
     def scrape_listing_page(self, page=1):
-        """Scrape a single page of listings"""
+        """Scrape a single page of listings using __NEXT_DATA__ JSON extraction"""
         params = PARAMS.copy()
         params['page'] = page
         
@@ -334,60 +335,62 @@ class AutoScraper:
             response = session.get(url, timeout=30)
             response.raise_for_status()
             
-            soup = BeautifulSoup(response.content, 'html.parser')
+            # Extract JSON data from __NEXT_DATA__ script tag
+            pattern = r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>'
+            match = re.search(pattern, response.text, re.DOTALL)
             
-            # Find all listing cards
-            listings = soup.find_all('article', class_='listing')
+            if not match:
+                logger.warning(f"⚠️ No __NEXT_DATA__ found on page {page}")
+                return [], False
             
-            if not listings:
-                # Try alternative selectors
-                listings = soup.find_all('div', class_='listing-container')
+            data = json.loads(match.group(1))
+            queries = data.get('props', {}).get('pageProps', {}).get('dehydratedState', {}).get('queries', [])
             
             extracted_listings = []
-            for listing in listings:
-                try:
-                    # Extract listing URL
-                    link = listing.find('a', href=True)
-                    if not link:
-                        continue
+            for query in queries:
+                state_data = query.get('state', {}).get('data', {})
+                if 'listings' in state_data:
+                    raw_listings = state_data['listings']
                     
-                    listing_url = link['href']
-                    if not listing_url.startswith('http'):
-                        listing_url = f"https://www.bilbasen.dk{listing_url}"
-                    
-                    # Extract external_id
-                    external_id = self.extract_external_id(listing_url)
-                    if not external_id:
-                        continue
-                    
-                    # Check if we've reached known listings (incremental mode)
-                    if self.mode == 'incremental' and self.known_max_id:
-                        if int(external_id) <= int(self.known_max_id):
-                            logger.info(f"🛑 Reached known listing ID {external_id}, stopping incremental scrape")
-                            return extracted_listings, True  # Stop signal
-                    
-                    # Update highest_external_id
-                    if not self.highest_external_id or int(external_id) > int(self.highest_external_id):
-                        self.highest_external_id = external_id
-                    
-                    # Extract basic info
-                    title = listing.find('h2') or listing.find('h3')
-                    title_text = title.get_text(strip=True) if title else ''
-                    
-                    # Extract image URL
-                    img = listing.find('img')
-                    image_url = img.get('src') or img.get('data-src') if img else None
-                    
-                    extracted_listings.append({
-                        'external_id': external_id,
-                        'url': listing_url,
-                        'title': title_text,
-                        'image_url': image_url
-                    })
-                    
-                except Exception as e:
-                    logger.warning(f"⚠️ Error extracting listing: {e}")
-                    continue
+                    for item in raw_listings:
+                        try:
+                            uri = item.get('uri', '')
+                            if not uri:
+                                continue
+                            
+                            external_id = uri.rstrip('/').split('/')[-1]
+                            if not external_id:
+                                continue
+                            
+                            # Check if we've reached known listings (incremental mode)
+                            if self.mode == 'incremental' and self.known_max_id:
+                                if int(external_id) <= int(self.known_max_id):
+                                    logger.info(f"🛑 Reached known listing ID {external_id}, stopping incremental scrape")
+                                    return extracted_listings, True  # Stop signal
+                            
+                            # Update highest_external_id
+                            if not self.highest_external_id or int(external_id) > int(self.highest_external_id):
+                                self.highest_external_id = external_id
+                            
+                            # Extract image URL from media array
+                            image_url = ''
+                            for media in item.get('media', []):
+                                if media.get('mediaType') == 'Picture':
+                                    image_url = media.get('url', '')
+                                    break
+                            
+                            listing_url = f"https://www.bilbasen.dk{uri}" if not uri.startswith('http') else uri
+                            
+                            extracted_listings.append({
+                                'external_id': external_id,
+                                'url': listing_url,
+                                'title': item.get('heading', ''),
+                                'image_url': image_url
+                            })
+                            
+                        except Exception as e:
+                            logger.warning(f"⚠️ Error extracting listing: {e}")
+                            continue
             
             logger.info(f"✅ Extracted {len(extracted_listings)} listings from page {page}")
             return extracted_listings, False  # No stop signal
