@@ -473,13 +473,20 @@ class AutoScraper:
             if os.path.exists(image_path):
                 return image_filename
             
-            response = self.session.get(image_url, timeout=30)
+            # Create session for this thread
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            
+            response = session.get(image_url, timeout=30)
             response.raise_for_status()
             
             with open(image_path, 'wb') as f:
                 f.write(response.content)
             
-            self.images_downloaded += 1
+            with self.lock:
+                self.images_downloaded += 1
             logger.debug(f"📥 Downloaded image: {image_filename}")
             return image_filename
             
