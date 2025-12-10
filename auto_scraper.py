@@ -74,8 +74,8 @@ HEADERS = {
     'Accept-Language': 'da,en-US;q=0.9,en;q=0.8',
 }
 
-# Output directories
-OUTPUT_DIR = 'bilbasen_scrape_auto'
+# Output directories - use same as manual scraper
+OUTPUT_DIR = 'bilbasen_scrape'
 IMAGES_DIR = os.path.join(OUTPUT_DIR, 'images')
 
 # Threading configuration
@@ -499,7 +499,7 @@ class AutoScraper:
                     image_filename = self.download_image(listing['image_url'], listing['external_id'])
                     if image_filename:
                         details['image_filename'] = image_filename
-                        details['image_path'] = f"bilbasen_scrape_auto/images/{image_filename}"
+                        details['image_path'] = f"images/{image_filename}"
                         details['image_downloaded'] = True
                 
                 # Upsert to database
@@ -609,6 +609,7 @@ class AutoScraper:
             
             # Image fields
             image_filename = raw_data.get('image_filename')
+            # Save path matching manual scraper format
             image_path = f"images/{image_filename}" if image_filename else None
             image_downloaded = bool(image_filename)
             
