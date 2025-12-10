@@ -887,13 +887,14 @@ def main():
                         help='Scraping mode (default: incremental)')
     parser.add_argument('--no-images', action='store_true',
                         help='Skip downloading images')
+    # Update global MAX_WORKERS if specified
+    global MAX_WORKERS
+    
     parser.add_argument('--workers', type=int, default=MAX_WORKERS,
                         help=f'Number of parallel workers (default: {MAX_WORKERS})')
     
     args = parser.parse_args()
     
-    # Update global MAX_WORKERS if specified
-    global MAX_WORKERS
     MAX_WORKERS = args.workers
     
     logger.info(f"🚀 Starting with {MAX_WORKERS} parallel workers")
