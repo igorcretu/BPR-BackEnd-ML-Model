@@ -78,7 +78,7 @@ CONFIG = {
     
     # Threading
     'MAX_WORKERS_PHASE1': 8,  # Parallel workers for link scraping
-    'MAX_WORKERS_PHASE2': 20,  # Parallel workers for detail scraping
+    'MAX_WORKERS_PHASE2': 12,  # Parallel workers for detail scraping
     
     # Checkpoints
     'CHECKPOINT_INTERVAL_COMBOS': 10,
