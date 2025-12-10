@@ -25,10 +25,13 @@ def clean_price(price_str):
 
 
 def clean_numeric(value_str, suffix=''):
-    """Clean numeric values with optional suffix like 'km', 'hk'"""
+    """Clean numeric values with optional suffix like 'km', 'hk', 'km/h', 'km/t'"""
     if pd.isna(value_str) or value_str == '' or value_str == '-':
         return None
-    value_str = str(value_str).replace(suffix, '').replace('.', '').replace(',', '.').replace('kg', '').replace('cm', '').strip()
+    # Remove Danish and English units
+    value_str = str(value_str).replace(suffix, '').replace('km/t', '').replace('km/h', '').replace('kmh', '').replace('kg', '').replace('cm', '').strip()
+    # Remove thousand separators (.) then convert comma to decimal point
+    value_str = value_str.replace('.', '').replace(',', '.')
     try:
         return int(float(value_str))
     except:
@@ -36,11 +39,11 @@ def clean_numeric(value_str, suffix=''):
 
 
 def clean_float(value_str):
-    """Clean float values like '14,0 kWh' or '-'"""
+    """Clean float values like '14,0 kWh' or '10.7 sec' or '14,7 sek.' or '-'"""
     if pd.isna(value_str) or value_str == '' or value_str == '-':
         return None
-    # Remove units and clean
-    value_str = str(value_str).replace('kWh', '').replace('kwh', '').replace(',', '.').strip()
+    # Remove units (Danish and English)
+    value_str = str(value_str).replace('kWh', '').replace('kwh', '').replace('sek.', '').replace('sek', '').replace('sec', '').replace(',', '.').strip()
     try:
         return float(value_str)
     except:
@@ -263,7 +266,7 @@ def import_csv_to_db(csv_path):
             doors = clean_numeric(row.get('model_doors'))
             if doors and (doors < 2 or doors > 5):
                 doors = 4
-            seats = clean_numeric(row.get('model_seats'))
+            seats = 5  # Default to 5 seats (no seats column in CSV)
             gear_count = clean_numeric(row.get('details_number_of_gears'))
             cylinders = clean_numeric(row.get('model_cylinders'))
             
@@ -272,7 +275,12 @@ def import_csv_to_db(csv_path):
             production_date = safe_value(row.get('details_production_year'))
             
             # Battery/EV fields
-            range_km = clean_numeric(row.get('details_range_km'))
+            # Range - remove "(NEDC)" and "km" suffix
+            range_val = row.get('details_range_km')
+            if pd.notna(range_val) and range_val != '-':
+                range_val = str(range_val).replace('(NEDC)', '').replace('(WLTP)', '').replace('km', '').strip()
+            range_km = clean_numeric(range_val)
+            
             battery_capacity = clean_float(row.get('details_battery_capacity_kwh'))
             energy_consumption = clean_numeric(row.get('details_energy_consumption'))
             home_charging_ac = safe_value(row.get('details_home_charging_ac'))
@@ -283,7 +291,12 @@ def import_csv_to_db(csv_path):
             fuel_consumption = safe_value(row.get('details_fuel_consumption'))
             co2_emission = safe_value(row.get('details_co2_udledning'))
             euro_norm = safe_value(row.get('details_euro_norm'))
-            tank_capacity = clean_numeric(row.get('model_tankkapacitet'))
+            
+            # Tank capacity - remove "l" suffix
+            tank_val = row.get('model_tankkapacitet')
+            if pd.notna(tank_val) and tank_val != '-':
+                tank_val = str(tank_val).replace('l', '').replace('L', '').strip()
+            tank_capacity = clean_numeric(tank_val)
             
             # Other fields
             color_val = row.get('details_color')
@@ -364,7 +377,7 @@ def import_csv_to_db(csv_path):
                 'top_speed': top_speed,
                 'drive_type': drive_type,
                 'doors': doors,
-                'seats': seats or 5,  # Default to 5 if not specified
+                'seats': seats,  # Always 5 (default)
                 'color': color,
                 'category': category,
                 'equipment': equipment,
