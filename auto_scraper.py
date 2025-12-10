@@ -35,6 +35,8 @@ import uuid
 import re
 from dotenv import load_dotenv
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 # Load environment variables
 load_dotenv()
@@ -76,13 +78,15 @@ HEADERS = {
 OUTPUT_DIR = 'bilbasen_scrape_auto'
 IMAGES_DIR = os.path.join(OUTPUT_DIR, 'images')
 
+# Threading configuration
+MAX_WORKERS = 16  # Parallel workers for detail scraping
+
 
 class AutoScraper:
     def __init__(self, mode='incremental', download_images=True):
         self.mode = mode
         self.download_images = download_images
-        self.session = requests.Session()
-        self.session.headers.update(HEADERS)
+        # No shared session - threads will create their own
         
         # Statistics
         self.cars_new = 0
@@ -90,6 +94,9 @@ class AutoScraper:
         self.images_downloaded = 0
         self.highest_external_id = None
         self.known_max_id = None
+        
+        # Thread safety
+        self.lock = threading.Lock()
         
         # Create output directories
         os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -218,7 +225,12 @@ class AutoScraper:
         """Scrape detailed information from a single listing page"""
         try:
             logger.debug(f"Fetching details for {external_id}")
-            response = self.session.get(listing_url, timeout=30)
+            
+            # Create session per thread
+            session = requests.Session()
+            session.headers.update(HEADERS)
+            
+            response = session.get(listing_url, timeout=30)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.content, 'html.parser')
@@ -313,6 +325,31 @@ class AutoScraper:
             logger.warning(f"⚠️ Failed to download image for {external_id}: {e}")
             return None
     
+    def _process_listing(self, listing):
+        """Process a single listing (scrape details, download image, upsert to DB). Thread-safe method."""
+        try:
+            # Get detailed information
+            details = self.scrape_listing_details(listing['url'], listing['external_id'])
+            
+            if details:
+                # Download image
+                if listing.get('image_url'):
+                    image_filename = self.download_image(listing['image_url'], listing['external_id'])
+                    if image_filename:
+                        details['image_filename'] = image_filename
+                        details['image_path'] = f"bilbasen_scrape_auto/images/{image_filename}"
+                        details['image_downloaded'] = True
+                
+                # Upsert to database
+                self.upsert_car(details)
+            
+            # Small delay to be respectful
+            time.sleep(random.uniform(0.3, 0.8))
+            
+        except Exception as e:
+            logger.error(f"❌ Error processing listing {listing['external_id']}: {e}")
+            raise
+    
     def check_car_exists(self, external_id):
         """Check if car exists in database"""
         try:
@@ -331,12 +368,14 @@ class AutoScraper:
             
             if car_id:
                 # Update existing car
-                self.cars_updated += 1
+                with self.lock:
+                    self.cars_updated += 1
                 logger.debug(f"🔄 Updating car {car_data.get('external_id')}")
             else:
                 # Insert new car
                 car_data['id'] = str(uuid.uuid4())
-                self.cars_new += 1
+                with self.lock:
+                    self.cars_new += 1
                 logger.debug(f"➕ Inserting new car {car_data.get('external_id')}")
             
             # Build UPSERT query (simplified version - full implementation would include all fields)
@@ -429,25 +468,21 @@ class AutoScraper:
                     stop_scraping = True
                     break
                 
-                # Scrape details and download images
-                for listing in listings:
-                    # Get detailed information
-                    details = self.scrape_listing_details(listing['url'], listing['external_id'])
+                # Scrape details and download images in parallel
+                logger.info(f"🔄 Processing {len(listings)} listings with {MAX_WORKERS} workers")
+                
+                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                    future_to_listing = {}
+                    for listing in listings:
+                        future = executor.submit(self._process_listing, listing)
+                        future_to_listing[future] = listing
                     
-                    if details:
-                        # Download image
-                        if listing.get('image_url'):
-                            image_filename = self.download_image(listing['image_url'], listing['external_id'])
-                            if image_filename:
-                                details['image_filename'] = image_filename
-                                details['image_path'] = f"bilbasen_scrape_auto/images/{image_filename}"
-                                details['image_downloaded'] = True
-                        
-                        # Upsert to database
-                        self.upsert_car(details)
-                    
-                    # Delay between requests
-                    time.sleep(random.uniform(1.5, 3.5))
+                    for future in as_completed(future_to_listing):
+                        listing = future_to_listing[future]
+                        try:
+                            future.result()  # Will raise exception if processing failed
+                        except Exception as e:
+                            logger.error(f"❌ Error processing {listing['external_id']}: {e}")
                 
                 # Move to next page
                 page += 1
@@ -489,13 +524,21 @@ class AutoScraper:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Bilbasen Auto-Scraper')
+    parser = argparse.ArgumentParser(description='Bilbasen Auto-Scraper (Multi-threaded)')
     parser.add_argument('--mode', choices=['incremental', 'full'], default='incremental',
                         help='Scraping mode (default: incremental)')
     parser.add_argument('--no-images', action='store_true',
                         help='Skip downloading images')
+    parser.add_argument('--workers', type=int, default=MAX_WORKERS,
+                        help=f'Number of parallel workers (default: {MAX_WORKERS})')
     
     args = parser.parse_args()
+    
+    # Update global MAX_WORKERS if specified
+    global MAX_WORKERS
+    MAX_WORKERS = args.workers
+    
+    logger.info(f"🚀 Starting with {MAX_WORKERS} parallel workers")
     
     scraper = AutoScraper(
         mode=args.mode,
