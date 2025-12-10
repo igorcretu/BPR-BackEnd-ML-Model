@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Bilbasen Incremental Scraper v2 - Multi-threaded
+Bilbasen Incremental Scraper v3
 Scrapes new listings from bilbasen.dk, sorted by newest first.
-Uses cookies to bypass WAF protection, multi-threading for speed.
+Extracts data exactly like the full scraper, imports like import_csv_to_db.py
 """
 
 import os
@@ -30,118 +30,81 @@ load_dotenv()
 # ============================================================================
 
 CONFIG = {
-    # Base URL with sorting (newest first)
     'SORTED_URL': 'https://www.bilbasen.dk/brugt/bil?includeengroscvr=true&includeleasing=false&sortby=date&sortorder=desc',
     'BASE_URL': 'https://www.bilbasen.dk/brugt/bil',
     
     'ITEMS_PER_PAGE': 30,
-    'MAX_PAGES': 200,  # Safety limit
+    'MAX_PAGES': 200,
     
-    # Delays for search pages (be respectful)
     'DELAY_BETWEEN_PAGES': (0.5, 1.0),
+    'DELAY_BETWEEN_CARS': (0.2, 0.5),
     
-    # Multi-threading
-    'MAX_WORKERS': 8,  # Parallel detail extraction threads
+    'MAX_WORKERS': 12,
     
-    # Retry settings
     'MAX_RETRIES': 3,
     'RETRY_DELAY_BASE': 5,
     
-    # Stop when we hit this many consecutive known IDs
     'KNOWN_ID_STOP_THRESHOLD': 60,
     
-    # Cookie file for WAF token
     'COOKIE_FILE': 'bilbasen_cookies.json',
     
-    # Output
     'LOG_DIR': 'logs',
     'IMAGES_DIR': 'images',
 }
 
-# ============================================================================
-# DATA MAPPINGS (same as import script)
-# ============================================================================
-
-FUEL_TYPE_MAP = {
-    'benzin': 'petrol', 'petrol': 'petrol', 'gasoline': 'petrol',
-    'diesel': 'diesel',
-    'el': 'electric', 'electric': 'electric', 'elektrisk': 'electric',
-    'hybrid': 'hybrid', 'benzin/hybrid': 'hybrid', 'diesel/hybrid': 'hybrid',
-    'plugin-hybrid': 'plugin_hybrid', 'plug-in hybrid': 'plugin_hybrid', 'plug-in-hybrid': 'plugin_hybrid',
-    'benzin/plugin-hybrid': 'plugin_hybrid', 'diesel/plugin-hybrid': 'plugin_hybrid',
-    'brint': 'hydrogen', 'hydrogen': 'hydrogen',
-    'gas': 'gas', 'lpg': 'gas', 'cng': 'gas', 'naturgas': 'gas',
-    'benzin/gas': 'gas', 'benzin/naturgas': 'gas',
-}
-
-TRANSMISSION_MAP = {
-    'automatisk': 'automatic', 'automatic': 'automatic', 'auto': 'automatic', 'aut': 'automatic', 'aut.': 'automatic',
-    'manuel': 'manual', 'manual': 'manual', 'man': 'manual', 'man.': 'manual',
-    'cvt': 'cvt', 'variabel': 'cvt', 'trinløs': 'cvt',
-    'semi-automatisk': 'semi_automatic', 'semi-automatic': 'semi_automatic', 'semi': 'semi_automatic',
-    'dsg': 'automatic', 's-tronic': 'automatic', 'tiptronic': 'automatic',
-    'dct': 'automatic', 'pdk': 'automatic', 'steptronic': 'automatic',
-}
-
-BODY_TYPE_MAP = {
-    'sedan': 'sedan', 'berlina': 'sedan', 'saloon': 'sedan',
-    'stationcar': 'station_wagon', 'station wagon': 'station_wagon', 'stcar': 'station_wagon', 'kombi': 'station_wagon', 'st.car': 'station_wagon', 'touring': 'station_wagon', 'avant': 'station_wagon', 'variant': 'station_wagon', 'sportswagon': 'station_wagon', 'sports tourer': 'station_wagon',
-    'hatchback': 'hatchback', 'hatch': 'hatchback', 'coupe/hatchback': 'hatchback', '3-dørs': 'hatchback', '5-dørs': 'hatchback',
-    'suv': 'suv', 'offroad': 'suv', 'crossover': 'suv', 'cuv': 'suv', 'terrænbil': 'suv', 'all terrain': 'suv',
-    'coupé': 'coupe', 'coupe': 'coupe', 'coupã©': 'coupe',
-    'cabriolet': 'convertible', 'convertible': 'convertible', 'cab': 'convertible', 'roadster': 'convertible', 'spider': 'convertible', 'spyder': 'convertible',
-    'van': 'van', 'minibus': 'van', 'bus': 'van',
-    'mpv': 'mpv', 'mini mpv': 'mpv', 'kompakt mpv': 'mpv',
-    'pickup': 'pickup', 'pick-up': 'pickup',
-    'kassevogn': 'van', 'varevogn': 'van', 'panel van': 'van',
-}
-
+# Danish to English translation map (from full scraper)
 DANISH_TO_ENGLISH = {
-    'modelår': 'model_year', 'modelaar': 'model_year', 'model_aar': 'model_year',
-    'første_reg': 'first_registration', 'første_registrering': 'first_registration', '1_registrering': 'first_registration', 'førstegangsregistrering': 'first_registration',
-    'kilometertal': 'mileage', 'km': 'mileage', 'kilometer': 'mileage', 'km_stand': 'mileage',
-    'brændstof': 'fuel_type', 'braendstof': 'fuel_type', 'brændstoftype': 'fuel_type',
-    'gearkasse': 'transmission', 'gear': 'transmission', 'geartype': 'transmission',
-    'karrosseri': 'body_type', 'karosseri': 'body_type', 'biltype': 'body_type', 'model_type': 'body_type',
-    'hestekræfter': 'horsepower', 'hk': 'horsepower', 'hestekrafter': 'horsepower', 'effekt_hk': 'horsepower',
-    'motor_størrelse': 'engine_size', 'motor_storrelse': 'engine_size', 'motorstørrelse': 'engine_size', 'ccm': 'engine_size', 'slagvolumen': 'engine_size',
-    'døre': 'doors', 'doere': 'doors', 'antal_døre': 'doors',
-    'farve': 'color', 'udvendig_farve': 'color', 'lakfarve': 'color',
-    'pris': 'price', 'kontantpris': 'price', 'salgspris': 'price',
-    'nypris': 'new_price', 'original_pris': 'new_price', 'ny_pris': 'new_price',
-    'beskrivelse': 'description', 'sælger_beskrivelse': 'description',
-    'titel': 'title', 'overskrift': 'title', 'annonce_titel': 'title',
-    'topfart': 'top_speed', 'top_fart': 'top_speed', 'max_hastighed': 'top_speed',
-    'acceleration': 'acceleration', '0_100_km_t': 'acceleration', 'acc_0_100': 'acceleration',
-    'co2_udledning': 'co2_emission', 'co2': 'co2_emission', 'co2_emission': 'co2_emission', 'co2_g_km': 'co2_emission',
-    'vægt': 'weight', 'vaegt': 'weight', 'egenvægt': 'weight', 'totalvægt': 'weight', 'tjenestevægt': 'weight',
-    'træk': 'drive_type', 'traek': 'drive_type', 'drivhjul': 'drive_type', 'hjultræk': 'drive_type',
-    'sæder': 'seats', 'saeder': 'seats', 'antal_sæder': 'seats', 'passagerer': 'seats',
-    'anhængertræk': 'towing_capacity', 'anhaengertraek': 'towing_capacity', 'trailer_vægt': 'towing_capacity',
-    'brændstofforbrug': 'fuel_consumption', 'braendstofforbrug': 'fuel_consumption', 'km_l': 'fuel_consumption', 'forbrug': 'fuel_consumption',
-    'rækkevidde': 'range_km', 'raekkevidde': 'range_km', 'range': 'range_km', 'elektrisk_rækkevidde': 'range_km',
-    'batterikapacitet': 'battery_capacity', 'batteri_kwh': 'battery_capacity', 'batteri': 'battery_capacity',
-    'opladningstid': 'charging_time_dc', 'ladetid': 'charging_time_dc',
-    'hjemmeoplader_ac': 'home_charging_ac', 'ac_opladning': 'home_charging_ac',
-    'hurtigoplader_dc': 'fast_charging_dc', 'dc_opladning': 'fast_charging_dc',
-    'energiforbrug': 'energy_consumption', 'el_forbrug': 'energy_consumption', 'kwh_100km': 'energy_consumption',
-    'cylindre': 'cylinders', 'antal_cylindre': 'cylinders',
-    'antal_gear': 'gear_count', 'gearantal': 'gear_count',
-    'ejerafgift': 'periodic_tax', 'grøn_ejerafgift': 'periodic_tax', 'årlig_afgift': 'periodic_tax',
-    'euronorm': 'euro_norm', 'euro_norm': 'euro_norm', 'emissionsnorm': 'euro_norm',
-    'tankkapacitet': 'tank_capacity', 'tank_størrelse': 'tank_capacity', 'tank': 'tank_capacity',
-    'abs_bremser': 'abs_brakes', 'abs': 'abs_brakes',
-    'esp': 'esp', 'stabilitetskontrol': 'esp',
-    'airbags': 'airbags', 'antal_airbags': 'airbags',
-    'bredde': 'width', 'bredde_cm': 'width',
-    'længde': 'length', 'laengde': 'length', 'længde_cm': 'length',
-    'højde': 'height', 'hoejde': 'height', 'højde_cm': 'height',
-    'bagagerum': 'trunk_size', 'bagagerums_størrelse': 'trunk_size', 'lastrum': 'trunk_size',
-    'lasteevne': 'load_capacity', 'nyttelast': 'load_capacity',
-    'sælger': 'seller_name', 'forhandler': 'seller_name', 'dealer': 'seller_name',
-    'postnummer': 'seller_zipcode', 'postnr': 'seller_zipcode',
-    'by': 'seller_city', 'lokation': 'seller_city',
-    'sidst_opdateret': 'last_updated', 'opdateret': 'last_updated', 'senest_opdateret': 'last_updated',
+    'modelår': 'model_year',
+    '1. registrering': 'first_registration',
+    '1_registrering': 'first_registration',
+    'kilometertal': 'mileage_km',
+    'drivmiddel': 'fuel_type',
+    'rækkevidde': 'range_km',
+    'batterikapacitet': 'battery_capacity_kwh',
+    'energiforbrug': 'energy_consumption',
+    'hjemmeopladning ac': 'home_charging_ac',
+    'hjemmeopladning_ac': 'home_charging_ac',
+    'hurtig opladning dc': 'fast_charging_dc',
+    'hurtig_opladning_dc': 'fast_charging_dc',
+    'opladningstid dc 10-80%': 'charging_time_dc_10_80_pct',
+    'opladningstid_dc_1080': 'charging_time_dc_10_80_pct',
+    'periodisk afgift': 'periodic_tax',
+    'periodisk_afgift': 'periodic_tax',
+    'ydelse': 'power_hp_nm',
+    'acceleration': 'acceleration_0_100',
+    'tophastighed': 'top_speed',
+    'trækvægt': 'towing_capacity',
+    'farve': 'color',
+    'brændstofforbrug': 'fuel_consumption',
+    'co2-udledning': 'co2_emission',
+    'co2udledning': 'co2_emission',
+    'euronorm': 'euro_norm',
+    'gearkasse': 'transmission_type',
+    'gear': 'number_of_gears',
+    'geartype': 'geartype',
+    'antal gear': 'number_of_gears',
+    'produceret': 'production_year',
+    'nypris': 'new_price',
+    'kategori': 'category',
+    'type': 'body_type',
+    'bagagerumsstørrelse': 'trunk_size',
+    'vægt': 'weight_kg',
+    'bredde': 'width_cm',
+    'længde': 'length_cm',
+    'højde': 'height_cm',
+    'lasteevne': 'load_capacity_kg',
+    'max. trækvægt m/bremse': 'max_towing_with_brake',
+    'max_trækvægt_mbremse': 'max_towing_with_brake',
+    'trækhjul': 'drive_type',
+    'abs-bremser': 'abs_brakes',
+    'absbremser': 'abs_brakes',
+    'esp': 'esp',
+    'airbags': 'airbags',
+    'døre': 'doors',
+    'cylindre': 'cylinders',
+    'tankstørrelse': 'tank_capacity_l',
+    'tankkapacitet': 'tank_capacity_l',
+    'motorstørrelse': 'engine_size',
 }
 
 # ============================================================================
@@ -149,9 +112,7 @@ DANISH_TO_ENGLISH = {
 # ============================================================================
 
 def setup_logging() -> logging.Logger:
-    """Setup logging to both file and console."""
     os.makedirs(CONFIG['LOG_DIR'], exist_ok=True)
-    
     log_file = os.path.join(CONFIG['LOG_DIR'], f"incremental_{datetime.now().strftime('%Y%m%d')}.log")
     
     formatter = logging.Formatter('%(asctime)s | %(message)s', datefmt='%H:%M:%S')
@@ -170,98 +131,144 @@ def setup_logging() -> logging.Logger:
     return logger
 
 # ============================================================================
-# CLEANING FUNCTIONS
+# HELPER FUNCTIONS (from full scraper)
 # ============================================================================
 
-def clean_price(price_val):
-    if pd.isna(price_val) or price_val == '':
+def translate_key(danish_key: str) -> str:
+    """Translate Danish key to English."""
+    normalized = danish_key.lower().strip()
+    normalized = re.sub(r'[^a-zæøå0-9\s_-]', '', normalized)
+    normalized = normalized.replace(' ', '_').replace('-', '_')
+    
+    if normalized in DANISH_TO_ENGLISH:
+        return DANISH_TO_ENGLISH[normalized]
+    if danish_key.lower() in DANISH_TO_ENGLISH:
+        return DANISH_TO_ENGLISH[danish_key.lower()]
+    return normalized
+
+def get_headers() -> Dict[str, str]:
+    return {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'da-DK,da;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+    }
+
+# ============================================================================
+# CLEANING FUNCTIONS (from import_csv_to_db.py)
+# ============================================================================
+
+def clean_price(price_str):
+    """Clean Danish price format: '38.900 kr.' -> 38900"""
+    if pd.isna(price_str) or price_str == '':
         return None
-    price_str = str(price_val)
-    price_str = re.sub(r'[^\d,.]', '', price_str)
-    price_str = price_str.replace(',', '.')
-    if '.' in price_str:
-        parts = price_str.rsplit('.', 1)
-        if len(parts) == 2 and len(parts[1]) <= 2:
-            price_str = parts[0].replace('.', '') + '.' + parts[1]
-        else:
-            price_str = price_str.replace('.', '')
+    price_str = str(price_str).replace(' kr.', '').replace('.', '').replace(',', '.').strip()
     try:
         return float(price_str)
-    except ValueError:
+    except:
         return None
 
-def clean_numeric(val):
-    if pd.isna(val) or val == '' or val is None:
+def clean_numeric(value_str, suffix=''):
+    """Clean numeric values with optional suffix"""
+    if pd.isna(value_str) or value_str == '' or value_str == '-':
         return None
-    val_str = str(val).strip()
-    val_str = re.sub(r'[^\d,.\-]', '', val_str)
-    val_str = val_str.replace(',', '.')
-    if val_str.count('.') > 1:
-        parts = val_str.split('.')
-        val_str = ''.join(parts[:-1]) + '.' + parts[-1]
+    value_str = str(value_str).replace(suffix, '').replace('km/t', '').replace('km/h', '').replace('kmh', '').replace('kg', '').replace('cm', '').strip()
+    value_str = value_str.replace('.', '').replace(',', '.')
     try:
-        num = float(val_str)
-        if num == int(num):
-            return int(num)
-        return num
-    except ValueError:
+        return int(float(value_str))
+    except:
+        return None
+
+def clean_float(value_str):
+    """Clean float values like '14,0 kWh'"""
+    if pd.isna(value_str) or value_str == '' or value_str == '-':
+        return None
+    value_str = str(value_str).replace('kWh', '').replace('kwh', '').replace('sek.', '').replace('sek', '').replace('sec', '').replace(',', '.').strip()
+    try:
+        return float(value_str)
+    except:
         return None
 
 def standardize_fuel_type(fuel):
+    """Standardize fuel types"""
     if pd.isna(fuel) or fuel == '':
         return None
-    fuel_lower = str(fuel).strip().lower()
-    return FUEL_TYPE_MAP.get(fuel_lower, fuel_lower)
+    
+    fuel_normalized = str(fuel).strip().lower().replace('-', '').replace(' ', '')
+    fuel_original = str(fuel).strip().lower()
+    
+    if fuel_normalized in ['el', 'electricity', 'electric']:
+        return 'Electricity'
+    if fuel_normalized in ['benzin', 'petrol', 'gasoline'] and 'hybrid' not in fuel_original:
+        return 'Petrol'
+    if fuel_normalized == 'diesel' and 'hybrid' not in fuel_original:
+        return 'Diesel'
+    if 'plugin' in fuel_normalized or 'pluginhybrid' in fuel_normalized:
+        return 'Plug-in Hybrid - Diesel' if 'diesel' in fuel_original else 'Plug-in Hybrid - Petrol'
+    if 'hybrid' in fuel_original:
+        return 'Hybrid - Diesel' if 'diesel' in fuel_original else 'Hybrid - Petrol'
+    
+    return 'Petrol'
 
-def standardize_transmission(trans):
-    if pd.isna(trans) or trans == '':
-        return None
+def standardize_transmission(trans, fuel_type):
+    """Standardize transmission types"""
+    if pd.isna(trans) or trans == '' or trans == '-':
+        return 'Automatic' if fuel_type == 'Electricity' else None
+    
     trans_lower = str(trans).strip().lower()
-    return TRANSMISSION_MAP.get(trans_lower, trans_lower)
+    if trans_lower in ['automatgear', 'automatic', 'automatisk', 'auto', 'automat', 'a']:
+        return 'Automatic'
+    if trans_lower in ['manuel', 'manual', 'manuell', 'manuelt', 'm']:
+        return 'Manual'
+    
+    return 'Manual'
 
 def standardize_body_type(body):
+    """Standardize body types"""
     if pd.isna(body) or body == '':
         return None
+    
+    mapping = {
+        'suv': 'SUV', 'cuv': 'SUV',
+        'sedan': 'Sedan',
+        'stationcar': 'Station Wagon', 'station wagon': 'Station Wagon', 'st.car': 'Station Wagon',
+        'hatchback': 'Hatchback', 'halvkombi': 'Hatchback', 'mikro': 'Hatchback',
+        'coupé': 'Coupe', 'coupe': 'Coupe',
+        'cabriolet': 'Cabriolet', 'kabrio': 'Cabriolet',
+        'minibus': 'Van', 'van': 'Van', 'mpv': 'Van', 'kassevogn': 'Van', 'wagon': 'Van',
+        'pickup': 'Pickup', 'pick-up': 'Pickup', '4x4': 'Pickup'
+    }
+    
     body_lower = str(body).strip().lower()
-    return BODY_TYPE_MAP.get(body_lower, body_lower)
+    return mapping.get(body_lower, str(body).strip())
 
-def clean_mileage(mileage_val):
-    if pd.isna(mileage_val) or mileage_val == '':
+def standardize_drive_type(drive):
+    """Standardize drive types"""
+    if pd.isna(drive) or drive == '':
         return None
-    mileage_str = re.sub(r'[^\d]', '', str(mileage_val))
-    if mileage_str:
-        val = int(mileage_str)
-        if val > 10000000:
-            val = val // 1000
-        return val
-    return None
-
-def clean_year(year_val):
-    if pd.isna(year_val) or year_val == '':
-        return None
-    year_str = str(year_val).strip()
-    match = re.search(r'(19|20)\d{2}', year_str)
-    if match:
-        year = int(match.group())
-        if 1900 <= year <= datetime.now().year + 1:
-            return year
-    return None
+    
+    mapping = {
+        'forhjulstræk': 'Front-Wheel Drive', 'front-wheel drive': 'Front-Wheel Drive', 'fwd': 'Front-Wheel Drive',
+        'baghjulstræk': 'Rear-Wheel Drive', 'rear-wheel drive': 'Rear-Wheel Drive', 'rwd': 'Rear-Wheel Drive',
+        'firehjulstræk': 'All-Wheel Drive', 'all-wheel drive': 'All-Wheel Drive', 
+        'awd': 'All-Wheel Drive', '4wd': 'All-Wheel Drive', '4x4': 'All-Wheel Drive'
+    }
+    
+    drive_lower = str(drive).strip().lower()
+    return mapping.get(drive_lower, str(drive).strip())
 
 def extract_horsepower(power_str):
+    """Extract horsepower from format like '50 hk/-' or '178 hk/230 nm'"""
     if pd.isna(power_str) or power_str == '':
         return None
-    match = re.search(r'(\d+)\s*hk', str(power_str).lower())
+    match = re.search(r'(\d+)\s*hk', str(power_str))
     if match:
         return int(match.group(1))
-    match = re.search(r'(\d+)\s*(?:hp|ps|kw)', str(power_str).lower())
-    if match:
-        val = int(match.group(1))
-        if 'kw' in str(power_str).lower():
-            val = int(val * 1.36)
-        return val
-    return clean_numeric(power_str)
+    return None
 
 def extract_torque(power_str):
+    """Extract torque from format like '178 hk/230 nm'"""
     if pd.isna(power_str) or power_str == '':
         return None
     match = re.search(r'(\d+)\s*nm', str(power_str).lower())
@@ -269,7 +276,17 @@ def extract_torque(power_str):
         return int(match.group(1))
     return None
 
+def extract_engine_size(power_str):
+    """Extract engine size from power string"""
+    if pd.isna(power_str) or power_str == '':
+        return None
+    match = re.search(r'(\d+[.,]\d+)\s*[lL]', str(power_str))
+    if match:
+        return float(match.group(1).replace(',', '.'))
+    return None
+
 def clean_boolean(value):
+    """Convert various boolean representations"""
     if pd.isna(value) or value == '':
         return None
     value_lower = str(value).strip().lower()
@@ -280,6 +297,7 @@ def clean_boolean(value):
     return None
 
 def safe_value(val):
+    """Convert pandas NA/NaN to Python None"""
     if pd.isna(val):
         return None
     if isinstance(val, (np.integer, np.floating)):
@@ -292,16 +310,6 @@ def safe_value(val):
     if val_str == '':
         return None
     return val_str
-
-def translate_key(danish_key: str) -> str:
-    normalized = danish_key.lower().strip()
-    normalized = re.sub(r'[^a-zæøå0-9\s_-]', '', normalized)
-    normalized = normalized.replace(' ', '_').replace('-', '_')
-    if normalized in DANISH_TO_ENGLISH:
-        return DANISH_TO_ENGLISH[normalized]
-    if danish_key.lower() in DANISH_TO_ENGLISH:
-        return DANISH_TO_ENGLISH[danish_key.lower()]
-    return normalized
 
 # ============================================================================
 # THREAD-SAFE STATS
@@ -328,7 +336,6 @@ class IncrementalScraper:
     def __init__(self, logger: logging.Logger, dry_run: bool = False):
         self.logger = logger
         self.dry_run = dry_run
-        self.session = requests.Session()
         self.db_config = {
             'host': os.getenv('POSTGRES_HOST', 'localhost'),
             'port': os.getenv('POSTGRES_PORT', '5432'),
@@ -338,34 +345,22 @@ class IncrementalScraper:
         }
         self.cookies = {}
         self.stats = Stats()
+        self.lock = threading.Lock()
         self.load_cookies()
     
-    def get_headers(self) -> Dict[str, str]:
-        return {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'da-DK,da;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-        }
-    
     def load_cookies(self):
-        cookie_path = CONFIG['COOKIE_FILE']
-        if os.path.exists(cookie_path):
+        if os.path.exists(CONFIG['COOKIE_FILE']):
             try:
-                with open(cookie_path, 'r') as f:
+                with open(CONFIG['COOKIE_FILE'], 'r') as f:
                     self.cookies = json.load(f)
-                self.logger.info(f"Loaded cookies from {cookie_path}")
+                self.logger.info(f"Loaded cookies from {CONFIG['COOKIE_FILE']}")
             except Exception as e:
                 self.logger.warning(f"Failed to load cookies: {e}")
-                self.cookies = {}
     
     def save_cookies(self):
-        cookie_path = CONFIG['COOKIE_FILE']
         try:
-            with open(cookie_path, 'w') as f:
+            with open(CONFIG['COOKIE_FILE'], 'w') as f:
                 json.dump(self.cookies, f)
-            self.logger.info(f"Saved cookies to {cookie_path}")
         except Exception as e:
             self.logger.warning(f"Failed to save cookies: {e}")
     
@@ -386,9 +381,8 @@ class IncrementalScraper:
             self.save_cookies()
             self.logger.info(f"Got {len(self.cookies)} cookies via Playwright")
             return True
-            
         except ImportError:
-            self.logger.error("Playwright not installed. Run: pip install playwright && playwright install chromium")
+            self.logger.error("Playwright not installed")
             return False
         except Exception as e:
             self.logger.error(f"Playwright error: {e}")
@@ -412,14 +406,16 @@ class IncrementalScraper:
             self.logger.error(f"Database error: {e}")
             return set()
     
-    def fetch_page(self, url: str, use_cookies: bool = True) -> Optional[str]:
+    def fetch_page(self, url: str, use_cookies: bool = False) -> Optional[str]:
+        """Fetch a page - create new session per request for thread safety"""
+        session = requests.Session()
         for attempt in range(CONFIG['MAX_RETRIES']):
             try:
                 cookies = self.cookies if use_cookies else {}
-                response = self.session.get(url, headers=self.get_headers(), cookies=cookies, timeout=30)
+                response = session.get(url, headers=get_headers(), cookies=cookies, timeout=30)
                 
                 if response.status_code == 202:
-                    if attempt == 0:
+                    if attempt == 0 and use_cookies:
                         self.logger.warning("WAF challenge detected, refreshing cookies...")
                         if self.refresh_cookies_with_playwright():
                             continue
@@ -427,7 +423,6 @@ class IncrementalScraper:
                 
                 response.raise_for_status()
                 return response.text
-                
             except requests.RequestException as e:
                 delay = CONFIG['RETRY_DELAY_BASE'] * (attempt + 1)
                 if attempt < CONFIG['MAX_RETRIES'] - 1:
@@ -441,6 +436,7 @@ class IncrementalScraper:
         return url
     
     def extract_listings_from_html(self, html_content: str) -> List[Dict]:
+        """Extract listings from search page - uses JSON-LD ItemList"""
         listings = []
         pattern = r'<script type="application/ld\+json">\s*(\{[^<]*"@type"\s*:\s*"ItemList"[^<]*\})\s*</script>'
         match = re.search(pattern, html_content, re.DOTALL)
@@ -448,9 +444,7 @@ class IncrementalScraper:
         if match:
             try:
                 data = json.loads(match.group(1))
-                items = data.get('itemListElement', [])
-                
-                for item in items:
+                for item in data.get('itemListElement', []):
                     url = item.get('url', '')
                     if url:
                         external_id = url.rstrip('/').split('/')[-1]
@@ -461,18 +455,17 @@ class IncrementalScraper:
                                 if img and 'billeder.bilbasen.dk' in img:
                                     image_url = img
                                     break
-                        
                         listings.append({
                             'uri': url,
                             'image_url': image_url,
                             'external_id': external_id
                         })
-            except json.JSONDecodeError as e:
-                self.logger.error(f"JSON parse error: {e}")
-        
+            except json.JSONDecodeError:
+                pass
         return listings
     
     def scrape_new_listings(self, known_ids: set) -> List[Dict]:
+        """Scrape sorted listings until we hit known IDs"""
         new_listings = []
         page = 1
         consecutive_known = 0
@@ -481,7 +474,7 @@ class IncrementalScraper:
             url = self.build_sorted_url(page)
             self.logger.info(f"Fetching page {page}...")
             
-            html = self.fetch_page(url)
+            html = self.fetch_page(url, use_cookies=True)
             if not html:
                 self.logger.warning(f"Failed to fetch page {page}")
                 break
@@ -517,197 +510,230 @@ class IncrementalScraper:
         
         return new_listings
     
-    def extract_car_details(self, html_content: str, url: str, image_url: str = '') -> Optional[Dict]:
-        """Extract car details from individual car page."""
-        try:
-            data = {'url': url, 'image_url': image_url}
-            
-            # Extract JSON-LD Product data
-            pattern = r'<script type="application/ld\+json">\s*(\{[^<]*"@type"\s*:\s*"Product"[^<]*\})\s*</script>'
-            match = re.search(pattern, html_content, re.DOTALL)
-            
-            if match:
-                try:
-                    product_data = json.loads(match.group(1))
-                    data['title'] = product_data.get('name', '')
-                    data['description'] = product_data.get('description', '')
-                    
-                    if 'offers' in product_data:
-                        offers = product_data['offers']
-                        if isinstance(offers, dict):
-                            data['price'] = offers.get('price')
-                    
-                    if 'brand' in product_data:
-                        brand = product_data['brand']
-                        if isinstance(brand, dict):
-                            data['brand'] = brand.get('name', '')
-                        else:
-                            data['brand'] = str(brand)
-                    
-                    if 'model' in product_data:
-                        data['model'] = product_data['model']
-                    
-                    if 'vehicleConfiguration' in product_data:
-                        data['variant'] = product_data['vehicleConfiguration']
-                    
-                    if 'color' in product_data:
-                        data['color'] = product_data['color']
-                    
-                except json.JSONDecodeError:
-                    pass
-            
-            # Extract __NEXT_DATA__ for additional details
-            next_data_pattern = r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>'
-            next_match = re.search(next_data_pattern, html_content, re.DOTALL)
-            
-            if next_match:
-                try:
-                    next_data = json.loads(next_match.group(1))
-                    page_props = next_data.get('props', {}).get('pageProps', {})
-                    
-                    listing_data = page_props.get('listing', {})
-                    if listing_data:
-                        props = listing_data.get('props', {})
-                        for key, value in props.items():
-                            english_key = translate_key(key)
-                            if english_key not in data or not data[english_key]:
-                                data[f'attr_{english_key}'] = value
-                        
-                        model_data = listing_data.get('model', {})
-                        for key, value in model_data.items():
-                            english_key = translate_key(key)
-                            data[f'model_{english_key}'] = value
-                        
-                        if 'description' in listing_data and not data.get('description'):
-                            data['description'] = listing_data['description']
-                        
-                        if 'price' in listing_data and not data.get('price'):
-                            data['price'] = listing_data['price']
-                        
-                        details = listing_data.get('details', {})
-                        for key, value in details.items():
-                            english_key = translate_key(key)
-                            data[f'details_{english_key}'] = value
-                        
-                        seller = listing_data.get('seller', {})
-                        if seller:
-                            data['seller_name'] = seller.get('name')
-                            location = seller.get('location', {})
-                            data['seller_city'] = location.get('city')
-                            data['seller_zipcode'] = location.get('zipCode')
-                    
-                except json.JSONDecodeError:
-                    pass
-            
-            return data if data.get('title') or data.get('brand') else None
-            
-        except Exception as e:
-            self.logger.error(f"Error extracting car details: {e}")
+    def extract_car_details(self, html_content: str, car_url: str, listing_image_url: str) -> Optional[Dict]:
+        """Extract car details from car page HTML - EXACTLY like full scraper"""
+        match = re.search(r'var _props = ({.*?});', html_content, re.DOTALL)
+        if not match:
             return None
-    
-    def process_car_data(self, raw_data: Dict) -> Optional[Dict]:
-        """Process raw data into database format."""
+        
         try:
-            url = raw_data.get('url', '')
-            external_id = url.rstrip('/').split('/')[-1] if url else None
+            data = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return None
+        
+        listing = data.get('listing', {})
+        vehicle = listing.get('vehicle', {})
+        tracking = data.get('tracking', {})
+        attr = tracking.get('gtm', {}).get('dataLayer', {}).get('a', {}).get('attr', {})
+        pulse_obj = tracking.get('pulse', {}).get('pulse', {}).get('object', {})
+        
+        result = {}
+        
+        # Basic info
+        result['external_id'] = listing.get('externalId')
+        result['url'] = listing.get('canonicalUrl', car_url)
+        result['brand'] = vehicle.get('make')
+        result['model'] = vehicle.get('model')
+        result['variant'] = vehicle.get('variant')
+        result['title'] = f"{vehicle.get('make', '')} {vehicle.get('model', '')} {vehicle.get('variant', '')}".strip()
+        
+        # Price
+        price_info = listing.get('price', {})
+        result['price'] = price_info.get('displayValue', '')
+        
+        # Description
+        result['description'] = listing.get('description', '')
+        
+        # Vehicle details (like details_model_year, details_mileage_km, etc)
+        for detail in vehicle.get('details', []):
+            danish_name = detail.get('name', '')
+            english_name = translate_key(danish_name)
+            result[f'details_{english_name}'] = detail.get('displayValue', '')
+        
+        # Model information (like model_new_price, model_body_type, etc)
+        for info in vehicle.get('modelInformation', []):
+            danish_name = info.get('name', '')
+            english_name = translate_key(danish_name)
+            result[f'model_{english_name}'] = info.get('displayValue', '')
+        
+        # Equipment
+        equipment_list = []
+        for eq in vehicle.get('equipment', []):
+            if isinstance(eq, dict) and 'value' in eq:
+                equipment_list.append(eq['value'])
+            elif isinstance(eq, str):
+                equipment_list.append(eq)
+        result['equipment'] = ';'.join(equipment_list)
+        
+        # Seller
+        seller = listing.get('seller', {})
+        result['seller_name'] = seller.get('name')
+        result['seller_type'] = seller.get('type')
+        address = seller.get('address', {})
+        result['seller_city'] = address.get('city')
+        result['seller_zipcode'] = address.get('zipCode')
+        
+        # Dates
+        result['listing_date'] = pulse_obj.get('publicationDate', '')
+        result['last_updated'] = pulse_obj.get('lastUpdateDate', '')
+        result['registration_date'] = attr.get('vehicle_history_registration_date', '')
+        
+        # Additional attr fields
+        if 'vehicle_history_kilometers_driven' in attr:
+            result['mileage_km_numeric'] = attr.get('vehicle_history_kilometers_driven')
+        
+        attr_mappings = {
+            'vehicle_model_year': 'attr_model_year',
+            'vehicle_model_fuel_type': 'attr_fuel_type',
+            'vehicle_model_gear_type': 'attr_gear_type',
+            'vehicle_model_weight': 'attr_weight_kg',
+            'vehicle_model_effect': 'attr_power_hp',
+            'vehicle_model_acc_0_to_100_kmh': 'attr_acceleration_0_100',
+            'vehicle_model_top_speed': 'attr_top_speed_kmh',
+            'vehicle_color_name': 'attr_color',
+        }
+        
+        for attr_key, result_key in attr_mappings.items():
+            if attr_key in attr:
+                result[result_key] = attr[attr_key]
+        
+        # Image
+        result['image_url'] = listing_image_url
+        result['image_filename'] = f"{result['external_id']}.jpg" if result['external_id'] else ''
+        
+        return result
+    
+    def process_car_to_db_format(self, row: Dict) -> Optional[Dict]:
+        """Convert raw scraped data to database format - EXACTLY like import_csv_to_db.py"""
+        try:
+            url = safe_value(row.get('url'))
+            external_id = str(row.get('external_id')) if row.get('external_id') else None
+            brand = safe_value(row.get('brand'))
+            model = safe_value(row.get('model'))
             
-            brand = safe_value(raw_data.get('brand'))
-            model = safe_value(raw_data.get('model'))
-            
-            if not brand:
-                title = raw_data.get('title', '')
-                if title:
-                    parts = title.split()
-                    if len(parts) >= 1:
-                        brand = parts[0]
-                    if len(parts) >= 2:
-                        model = parts[1]
-            
-            if not brand or not external_id:
+            if not url or not brand or not model:
                 return None
             
-            variant = safe_value(raw_data.get('variant') or raw_data.get('model_variant'))
-            title = safe_value(raw_data.get('title'))
-            description = safe_value(raw_data.get('description'))
+            price = clean_price(row.get('price'))
+            if not price or price <= 0:
+                return None
             
-            price = clean_price(raw_data.get('price') or raw_data.get('model_price'))
-            new_price = clean_price(raw_data.get('new_price') or raw_data.get('model_new_price') or raw_data.get('attr_new_price'))
+            variant = safe_value(row.get('variant'))
+            title = safe_value(row.get('title'))
+            description = safe_value(row.get('description'))
             
-            model_year = clean_year(raw_data.get('model_year') or raw_data.get('attr_model_year') or raw_data.get('model_model_year'))
+            # Fuel type first (needed for transmission)
+            fuel_type = standardize_fuel_type(row.get('details_fuel_type'))
+            
+            new_price = clean_price(row.get('model_new_price'))
+            model_year = clean_numeric(row.get('details_model_year'))
             year = model_year
+            mileage = clean_numeric(row.get('details_mileage_km'), ' km')
             
-            first_reg = safe_value(raw_data.get('first_registration') or raw_data.get('model_first_registration') or raw_data.get('attr_first_registration'))
-            production_date = safe_value(raw_data.get('production_date') or raw_data.get('model_production_date'))
+            transmission = standardize_transmission(row.get('details_geartype') or row.get('details_transmission_type'), fuel_type)
+            body_type = standardize_body_type(row.get('model_body_type'))
+            drive_type = standardize_drive_type(row.get('model_drive_type'))
             
-            mileage = clean_mileage(raw_data.get('mileage') or raw_data.get('model_mileage') or raw_data.get('attr_mileage') or raw_data.get('model_km'))
-            
-            fuel_type = standardize_fuel_type(raw_data.get('fuel_type') or raw_data.get('model_fuel_type') or raw_data.get('attr_fuel_type'))
-            transmission = standardize_transmission(raw_data.get('transmission') or raw_data.get('model_transmission') or raw_data.get('attr_transmission') or raw_data.get('model_gear'))
-            gear_count = clean_numeric(raw_data.get('gear_count') or raw_data.get('model_gear_count'))
-            cylinders = clean_numeric(raw_data.get('cylinders') or raw_data.get('model_cylinders'))
-            
-            body_type = standardize_body_type(raw_data.get('body_type') or raw_data.get('model_body_type') or raw_data.get('attr_body_type') or raw_data.get('model_model_type'))
-            
-            power_str = raw_data.get('horsepower') or raw_data.get('model_horsepower') or raw_data.get('attr_horsepower') or raw_data.get('model_effect_hk') or raw_data.get('model_hk')
+            # Power
+            power_str = row.get('details_power_hp_nm')
             horsepower = extract_horsepower(power_str)
+            if not horsepower:
+                horsepower = clean_numeric(row.get('attr_power_hp'))
             torque_nm = extract_torque(power_str)
+            engine_size = extract_engine_size(power_str)
             
-            acceleration = clean_numeric(raw_data.get('acceleration') or raw_data.get('model_acceleration') or raw_data.get('model_0_100'))
-            top_speed = clean_numeric(raw_data.get('top_speed') or raw_data.get('model_top_speed') or raw_data.get('model_topfart'))
+            # Performance
+            acceleration_val = row.get('details_acceleration_0_100')
+            if not acceleration_val or acceleration_val == '-':
+                acceleration_val = row.get('attr_acceleration_0_100')
+            acceleration = clean_float(acceleration_val)
             
-            drive_type = safe_value(raw_data.get('drive_type') or raw_data.get('model_drive_type') or raw_data.get('attr_drive_type') or raw_data.get('model_traek'))
+            top_speed_val = row.get('details_top_speed')
+            if not top_speed_val or top_speed_val == '-':
+                top_speed_val = row.get('attr_top_speed_kmh')
+            top_speed = clean_numeric(top_speed_val)
             
-            doors = clean_numeric(raw_data.get('doors') or raw_data.get('model_doors') or raw_data.get('attr_doors'))
-            seats = clean_numeric(raw_data.get('seats') or raw_data.get('model_seats') or raw_data.get('attr_seats'))
+            # Body
+            doors = clean_numeric(row.get('model_doors'))
+            if doors and (doors < 2 or doors > 5):
+                doors = 4
+            seats = 5
+            gear_count = clean_numeric(row.get('details_number_of_gears'))
+            cylinders = clean_numeric(row.get('model_cylinders'))
             
-            color = safe_value(raw_data.get('color') or raw_data.get('model_color') or raw_data.get('attr_color'))
-            category = safe_value(raw_data.get('category') or raw_data.get('model_category'))
+            # Registration
+            first_registration = safe_value(row.get('details_first_registration'))
+            production_date = safe_value(row.get('details_production_year'))
             
-            equipment_raw = raw_data.get('equipment') or raw_data.get('model_equipment') or raw_data.get('attr_equipment')
-            if isinstance(equipment_raw, list):
-                equipment = ', '.join(str(e) for e in equipment_raw)
-            else:
-                equipment = safe_value(equipment_raw)
+            # EV fields
+            range_val = row.get('details_range_km')
+            if range_val and range_val != '-':
+                range_val = str(range_val).replace('(NEDC)', '').replace('(WLTP)', '').replace('km', '').strip()
+            range_km = clean_numeric(range_val)
             
-            range_km = clean_numeric(raw_data.get('range_km') or raw_data.get('model_range') or raw_data.get('model_range_km') or raw_data.get('model_raekkevide'))
-            battery_capacity = clean_numeric(raw_data.get('battery_capacity') or raw_data.get('model_battery_capacity') or raw_data.get('model_batteri_kapacitet'))
-            energy_consumption = clean_numeric(raw_data.get('energy_consumption') or raw_data.get('model_energy_consumption') or raw_data.get('model_energiforbrug'))
-            home_charging_ac = clean_numeric(raw_data.get('home_charging_ac') or raw_data.get('model_home_charging_ac'))
-            fast_charging_dc = clean_numeric(raw_data.get('fast_charging_dc') or raw_data.get('model_fast_charging_dc'))
-            charging_time_dc = clean_numeric(raw_data.get('charging_time_dc') or raw_data.get('model_charging_time'))
+            battery_capacity = clean_float(row.get('details_battery_capacity_kwh'))
+            energy_consumption = clean_numeric(row.get('details_energy_consumption'))
+            home_charging_ac = safe_value(row.get('details_home_charging_ac'))
+            fast_charging_dc = safe_value(row.get('details_fast_charging_dc'))
+            charging_time_dc = safe_value(row.get('details_charging_time_dc_10_80_pct'))
             
-            fuel_consumption = clean_numeric(raw_data.get('fuel_consumption') or raw_data.get('model_fuel_consumption') or raw_data.get('model_forbrug'))
-            co2_emission = clean_numeric(raw_data.get('co2_emission') or raw_data.get('model_co2') or raw_data.get('model_co2_emission'))
-            euro_norm = safe_value(raw_data.get('euro_norm') or raw_data.get('model_euro_norm'))
-            tank_capacity = clean_numeric(raw_data.get('tank_capacity') or raw_data.get('model_tank_capacity') or raw_data.get('model_tank'))
+            # Fuel/emissions
+            fuel_consumption = safe_value(row.get('details_fuel_consumption'))
+            co2_emission = safe_value(row.get('details_co2_emission') or row.get('details_co2_udledning'))
+            euro_norm = safe_value(row.get('details_euro_norm'))
             
-            periodic_tax = clean_numeric(raw_data.get('periodic_tax') or raw_data.get('model_ejerafgift') or raw_data.get('attr_periodic_tax'))
+            # Tank
+            tank_val = row.get('model_tank_capacity_l') or row.get('model_tankkapacitet')
+            if tank_val and tank_val != '-':
+                tank_val = str(tank_val).replace('l', '').replace('L', '').strip()
+            tank_capacity = clean_numeric(tank_val)
             
-            image_url = raw_data.get('image_url', '')
-            image_filename = f"{external_id}.jpg" if external_id and image_url else None
-            image_path = f"images/{image_filename}" if image_filename else None
+            # Color
+            color_val = row.get('details_color')
+            if not color_val or color_val == '-':
+                color_val = row.get('attr_color')
+            color = safe_value(color_val)
             
-            abs_brakes = clean_boolean(raw_data.get('model_abs_brakes'))
-            esp = clean_boolean(raw_data.get('model_esp'))
-            airbags = clean_numeric(raw_data.get('model_airbags'))
+            equipment = safe_value(row.get('equipment'))
+            category = safe_value(row.get('model_category'))
+            periodic_tax = safe_value(row.get('details_periodic_tax'))
             
-            weight = clean_numeric(raw_data.get('model_weight_kg')) or clean_numeric(raw_data.get('attr_weight_kg'))
-            width = clean_numeric(raw_data.get('model_width_cm'))
-            length = clean_numeric(raw_data.get('model_length_cm'))
-            height = clean_numeric(raw_data.get('model_height_cm'))
-            trunk_size = clean_numeric(raw_data.get('model_trunk_size'))
-            load_capacity = clean_numeric(raw_data.get('model_load_capacity_kg'))
-            towing_capacity = clean_numeric(raw_data.get('details_towing_capacity')) or clean_numeric(raw_data.get('model_max_towing_with_brake'))
-            max_towing_weight = clean_numeric(raw_data.get('model_max_towing_with_brake'))
+            # Booleans
+            abs_brakes = clean_boolean(row.get('model_abs_brakes'))
+            esp = clean_boolean(row.get('model_esp'))
+            airbags = clean_numeric(row.get('model_airbags'))
             
-            seller_city = safe_value(raw_data.get('seller_city'))
-            seller_zipcode = safe_value(raw_data.get('seller_zipcode'))
+            # Dimensions
+            weight_val = row.get('model_weight_kg')
+            if not weight_val or weight_val == '-':
+                weight_val = row.get('attr_weight_kg')
+            weight = clean_numeric(weight_val)
+            
+            width = clean_numeric(row.get('model_width_cm'))
+            length = clean_numeric(row.get('model_length_cm'))
+            height = clean_numeric(row.get('model_height_cm'))
+            trunk_size = clean_numeric(row.get('model_trunk_size'))
+            load_capacity = clean_numeric(row.get('model_load_capacity_kg'))
+            
+            towing_val = row.get('details_towing_capacity')
+            if not towing_val or towing_val == '-':
+                towing_val = row.get('model_max_towing_with_brake')
+            towing_capacity = clean_numeric(towing_val)
+            max_towing_weight = clean_numeric(row.get('model_max_towing_with_brake'))
+            
+            # Location
+            seller_city = safe_value(row.get('seller_city'))
+            seller_zipcode = safe_value(row.get('seller_zipcode'))
             if seller_city and seller_zipcode:
                 location = f"{seller_city}, {seller_zipcode}"
             elif seller_city:
                 location = seller_city
             else:
                 location = None
+            
+            # Image - will be set after download
+            image_filename = row.get('image_filename')
+            image_path = f"images/{image_filename}" if image_filename else None
             
             return {
                 'external_id': external_id or url,
@@ -721,7 +747,7 @@ class IncrementalScraper:
                 'new_price': new_price,
                 'model_year': model_year,
                 'year': year,
-                'first_registration': first_reg,
+                'first_registration': first_registration,
                 'production_date': production_date,
                 'mileage': mileage,
                 'fuel_type': fuel_type,
@@ -731,7 +757,7 @@ class IncrementalScraper:
                 'body_type': body_type,
                 'horsepower': horsepower,
                 'torque_nm': torque_nm,
-                'engine_size': None,
+                'engine_size': engine_size,
                 'acceleration': acceleration,
                 'top_speed': top_speed,
                 'drive_type': drive_type,
@@ -763,156 +789,158 @@ class IncrementalScraper:
                 'tank_capacity': tank_capacity,
                 'periodic_tax': periodic_tax,
                 'image_path': image_path,
-                'image_url': image_url,
-                'image_downloaded': False,  # Will be set to True only after successful download
+                'image_downloaded': False,
                 'source_url': url,
                 'location': location,
-                'dealer_name': safe_value(raw_data.get('seller_name'))
+                'dealer_name': safe_value(row.get('seller_name')),
+                'image_url': row.get('image_url', '')
             }
         except Exception as e:
-            self.logger.error(f"Error processing car data: {e}")
             return None
     
     def download_image(self, image_url: str, save_path: str) -> bool:
-        """Download image to local file."""
-        if not image_url or self.dry_run:
+        """Download image to local file"""
+        if not image_url:
             return False
         try:
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            response = requests.get(image_url, headers=self.get_headers(), timeout=30, stream=True)
+            session = requests.Session()
+            session.headers.update(get_headers())
+            response = session.get(image_url, timeout=30, stream=True)
             response.raise_for_status()
             with open(save_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
             return True
-        except Exception as e:
+        except:
             return False
     
-    def process_single_listing(self, listing: Dict) -> Optional[Dict]:
-        """Process a single listing - fetch details, download image, return car_data."""
-        try:
-            # Fetch car page
-            html = self.fetch_page(listing['uri'], use_cookies=False)
-            if not html:
-                self.stats.increment('error_count')
-                return None
-            
-            # Extract details
-            raw_data = self.extract_car_details(html, listing['uri'], listing['image_url'])
-            if not raw_data:
-                self.stats.increment('error_count')
-                return None
-            
-            # Process into database format
-            car_data = self.process_car_data(raw_data)
-            if not car_data:
-                self.stats.increment('skipped_count')
-                return None
-            
-            # Download image BEFORE setting flag
-            if listing['image_url']:
-                img_path = os.path.join(CONFIG['IMAGES_DIR'], f"{listing['external_id']}.jpg")
-                if self.download_image(listing['image_url'], img_path):
+    def process_single_car(self, listing: Dict, images_dir: str) -> Optional[Dict]:
+        """Process a single car - fetch, extract, download image"""
+        car_url = listing['uri']
+        image_url = listing.get('image_url', '')
+        external_id = listing.get('external_id', '')
+        
+        # Fetch page
+        html = self.fetch_page(car_url, use_cookies=False)
+        if not html:
+            self.stats.increment('error_count')
+            return None
+        
+        # Extract raw details (like full scraper)
+        raw_details = self.extract_car_details(html, car_url, image_url)
+        if not raw_details:
+            self.stats.increment('error_count')
+            return None
+        
+        # Convert to database format (like import script)
+        car_data = self.process_car_to_db_format(raw_details)
+        if not car_data:
+            self.stats.increment('skipped_count')
+            return None
+        
+        # Download image
+        if image_url and external_id:
+            img_path = os.path.join(images_dir, f"{external_id}.jpg")
+            if not os.path.exists(img_path):
+                if self.download_image(image_url, img_path):
                     car_data['image_downloaded'] = True
                     self.stats.increment('image_downloaded')
                 else:
                     car_data['image_downloaded'] = False
                     self.stats.increment('image_failed')
-            
-            return car_data
-            
-        except Exception as e:
-            self.stats.increment('error_count')
-            return None
-    
-    def insert_cars_batch(self, cars: List[Dict]) -> int:
-        """Insert multiple cars to database in a single transaction."""
-        if self.dry_run or not cars:
-            return len(cars)
+            else:
+                car_data['image_downloaded'] = True
         
-        inserted = 0
+        # Small delay
+        time.sleep(random.uniform(*CONFIG['DELAY_BETWEEN_CARS']))
+        
+        return car_data
+    
+    def insert_car_to_db(self, car_data: Dict) -> bool:
+        """Insert a single car to database"""
+        if self.dry_run:
+            return True
+        
         try:
             conn = self.get_db_connection()
             cur = conn.cursor()
             
-            for car_data in cars:
-                try:
-                    # Check if already exists
-                    cur.execute("SELECT id FROM cars WHERE external_id = %s", (car_data['external_id'],))
-                    if cur.fetchone():
-                        continue
-                    
-                    cur.execute("""
-                        INSERT INTO cars (
-                            external_id, url, brand, model, variant, title, description,
-                            price, new_price, model_year, year, first_registration, production_date,
-                            mileage, fuel_type, transmission, gear_count, cylinders,
-                            body_type, horsepower, torque_nm, engine_size,
-                            acceleration, top_speed, drive_type, doors, seats,
-                            color, category, equipment, abs_brakes, esp, airbags,
-                            weight, width, length, height, trunk_size, load_capacity,
-                            towing_capacity, max_towing_weight,
-                            range_km, battery_capacity, energy_consumption,
-                            home_charging_ac, fast_charging_dc, charging_time_dc,
-                            fuel_consumption, co2_emission, euro_norm, tank_capacity,
-                            periodic_tax, image_path, image_downloaded,
-                            source_url, location, dealer_name
-                        ) VALUES (
-                            %(external_id)s, %(url)s, %(brand)s, %(model)s, %(variant)s,
-                            %(title)s, %(description)s, %(price)s, %(new_price)s,
-                            %(model_year)s, %(year)s, %(first_registration)s, %(production_date)s,
-                            %(mileage)s, %(fuel_type)s, %(transmission)s, %(gear_count)s, %(cylinders)s,
-                            %(body_type)s, %(horsepower)s, %(torque_nm)s, %(engine_size)s,
-                            %(acceleration)s, %(top_speed)s, %(drive_type)s,
-                            %(doors)s, %(seats)s, %(color)s, %(category)s, %(equipment)s,
-                            %(abs_brakes)s, %(esp)s, %(airbags)s,
-                            %(weight)s, %(width)s, %(length)s, %(height)s, %(trunk_size)s, %(load_capacity)s,
-                            %(towing_capacity)s, %(max_towing_weight)s,
-                            %(range_km)s, %(battery_capacity)s, %(energy_consumption)s,
-                            %(home_charging_ac)s, %(fast_charging_dc)s, %(charging_time_dc)s,
-                            %(fuel_consumption)s, %(co2_emission)s, %(euro_norm)s, %(tank_capacity)s,
-                            %(periodic_tax)s, %(image_path)s, %(image_downloaded)s,
-                            %(source_url)s, %(location)s, %(dealer_name)s
-                        )
-                    """, car_data)
-                    inserted += 1
-                except Exception as e:
-                    self.logger.warning(f"Insert error for {car_data.get('external_id')}: {e}")
+            # Check if exists
+            cur.execute("SELECT id FROM cars WHERE external_id = %s", (car_data['external_id'],))
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+                return False
+            
+            # Remove image_url before insert (not a DB column)
+            insert_data = {k: v for k, v in car_data.items() if k != 'image_url'}
+            
+            cur.execute("""
+                INSERT INTO cars (
+                    external_id, url, brand, model, variant, title, description,
+                    price, new_price, model_year, year, first_registration, production_date,
+                    mileage, fuel_type, transmission, gear_count, cylinders,
+                    body_type, horsepower, torque_nm, engine_size,
+                    acceleration, top_speed, drive_type, doors, seats,
+                    color, category, equipment, abs_brakes, esp, airbags,
+                    weight, width, length, height, trunk_size, load_capacity,
+                    towing_capacity, max_towing_weight,
+                    range_km, battery_capacity, energy_consumption,
+                    home_charging_ac, fast_charging_dc, charging_time_dc,
+                    fuel_consumption, co2_emission, euro_norm, tank_capacity,
+                    periodic_tax, image_path, image_downloaded,
+                    source_url, location, dealer_name
+                ) VALUES (
+                    %(external_id)s, %(url)s, %(brand)s, %(model)s, %(variant)s,
+                    %(title)s, %(description)s, %(price)s, %(new_price)s,
+                    %(model_year)s, %(year)s, %(first_registration)s, %(production_date)s,
+                    %(mileage)s, %(fuel_type)s, %(transmission)s, %(gear_count)s, %(cylinders)s,
+                    %(body_type)s, %(horsepower)s, %(torque_nm)s, %(engine_size)s,
+                    %(acceleration)s, %(top_speed)s, %(drive_type)s,
+                    %(doors)s, %(seats)s, %(color)s, %(category)s, %(equipment)s,
+                    %(abs_brakes)s, %(esp)s, %(airbags)s,
+                    %(weight)s, %(width)s, %(length)s, %(height)s, %(trunk_size)s, %(load_capacity)s,
+                    %(towing_capacity)s, %(max_towing_weight)s,
+                    %(range_km)s, %(battery_capacity)s, %(energy_consumption)s,
+                    %(home_charging_ac)s, %(fast_charging_dc)s, %(charging_time_dc)s,
+                    %(fuel_consumption)s, %(co2_emission)s, %(euro_norm)s, %(tank_capacity)s,
+                    %(periodic_tax)s, %(image_path)s, %(image_downloaded)s,
+                    %(source_url)s, %(location)s, %(dealer_name)s
+                )
+            """, insert_data)
             
             conn.commit()
             cur.close()
             conn.close()
-            
+            return True
         except Exception as e:
-            self.logger.error(f"Batch insert error: {e}")
-        
-        return inserted
+            self.logger.error(f"DB insert error: {e}")
+            return False
     
     def run(self, max_new_listings: int = None) -> Dict:
-        """Run the incremental scraper with multi-threading."""
+        """Run the incremental scraper"""
         start_time = time.time()
         
         self.logger.info("=" * 60)
-        self.logger.info("INCREMENTAL SCRAPER v2 (Multi-threaded)")
+        self.logger.info("INCREMENTAL SCRAPER v3")
         self.logger.info(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         self.logger.info(f"Workers: {CONFIG['MAX_WORKERS']}")
         if self.dry_run:
-            self.logger.info("MODE: DRY RUN (no database changes)")
+            self.logger.info("MODE: DRY RUN")
         self.logger.info("=" * 60)
         
-        # Get known IDs from database
+        # Get known IDs
         known_ids = self.get_known_external_ids()
         
         if not known_ids and not self.dry_run:
-            self.logger.warning("No existing cars in database. Run the full scraper first!")
+            self.logger.warning("No existing cars. Run full scraper first!")
             return {'new_count': 0, 'skipped_count': 0, 'error_count': 0, 'duration': 0}
         
         # Phase 1: Find new listings
-        self.logger.info("\n--- Phase 1: Finding new listings (sorted by newest) ---")
-        
+        self.logger.info("\n--- Phase 1: Finding new listings ---")
         new_listings = self.scrape_new_listings(known_ids)
         
-        self.logger.info(f"\nTotal new listings found: {len(new_listings)}")
+        self.logger.info(f"\nTotal new listings: {len(new_listings)}")
         
         if max_new_listings and len(new_listings) > max_new_listings:
             new_listings = new_listings[:max_new_listings]
@@ -920,20 +948,21 @@ class IncrementalScraper:
         
         if not new_listings:
             duration = time.time() - start_time
-            self.logger.info(f"\nNo new listings to process. Duration: {duration:.1f}s")
+            self.logger.info(f"\nNo new listings. Duration: {duration:.1f}s")
             return {'new_count': 0, 'skipped_count': 0, 'error_count': 0, 'duration': duration}
         
-        # Phase 2: Extract details with multi-threading
+        # Phase 2: Extract details with threading
         self.logger.info(f"\n--- Phase 2: Extracting details ({CONFIG['MAX_WORKERS']} threads) ---")
         
-        os.makedirs(CONFIG['IMAGES_DIR'], exist_ok=True)
+        images_dir = CONFIG['IMAGES_DIR']
+        os.makedirs(images_dir, exist_ok=True)
         
         processed_cars = []
         completed = 0
         
         with ThreadPoolExecutor(max_workers=CONFIG['MAX_WORKERS']) as executor:
             future_to_listing = {
-                executor.submit(self.process_single_listing, listing): listing
+                executor.submit(self.process_single_car, listing, images_dir): listing
                 for listing in new_listings
             }
             
@@ -945,32 +974,27 @@ class IncrementalScraper:
                     car_data = future.result()
                     if car_data:
                         processed_cars.append(car_data)
-                        if completed % 10 == 0 or completed == len(new_listings):
-                            self.logger.info(f"Progress: {completed}/{len(new_listings)} ({len(processed_cars)} successful)")
+                    
+                    if completed % 20 == 0 or completed == len(new_listings):
+                        self.logger.info(f"Progress: {completed}/{len(new_listings)} ({len(processed_cars)} valid)")
                 except Exception as e:
-                    self.logger.error(f"Error processing {listing['external_id']}: {e}")
+                    self.logger.error(f"Error: {e}")
                     self.stats.increment('error_count')
         
-        # Phase 3: Batch insert to database
-        self.logger.info(f"\n--- Phase 3: Inserting {len(processed_cars)} cars to database ---")
+        # Phase 3: Insert to database
+        self.logger.info(f"\n--- Phase 3: Inserting {len(processed_cars)} cars ---")
         
-        # Insert in batches of 100
-        batch_size = 100
-        total_inserted = 0
+        inserted = 0
+        for car_data in processed_cars:
+            if self.insert_car_to_db(car_data):
+                inserted += 1
         
-        for i in range(0, len(processed_cars), batch_size):
-            batch = processed_cars[i:i + batch_size]
-            inserted = self.insert_cars_batch(batch)
-            total_inserted += inserted
-            self.logger.info(f"  Batch {i // batch_size + 1}: inserted {inserted}/{len(batch)}")
-        
-        self.stats.new_count = total_inserted
+        self.stats.new_count = inserted
         
         duration = time.time() - start_time
         
-        # Summary
         self.logger.info("\n" + "=" * 60)
-        self.logger.info("INCREMENTAL SCRAPER COMPLETED")
+        self.logger.info("COMPLETED")
         self.logger.info(f"New cars inserted: {self.stats.new_count}")
         self.logger.info(f"Skipped (invalid): {self.stats.skipped_count}")
         self.logger.info(f"Errors: {self.stats.error_count}")
@@ -994,36 +1018,29 @@ class IncrementalScraper:
 # ============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description='Bilbasen Incremental Scraper v2')
-    parser.add_argument('--test', action='store_true', help='Test mode (limit to 10 new listings)')
-    parser.add_argument('--dry-run', action='store_true', help='Dry run (no database changes)')
-    parser.add_argument('--max', type=int, default=None, help='Maximum new listings to process')
-    parser.add_argument('--workers', type=int, default=None, help='Number of worker threads')
-    parser.add_argument('--refresh-cookies', action='store_true', help='Force refresh WAF cookies')
+    parser = argparse.ArgumentParser(description='Bilbasen Incremental Scraper v3')
+    parser.add_argument('--test', action='store_true', help='Test mode (10 listings)')
+    parser.add_argument('--dry-run', action='store_true', help='No database changes')
+    parser.add_argument('--max', type=int, default=None, help='Max listings')
+    parser.add_argument('--workers', type=int, default=None, help='Worker threads')
+    parser.add_argument('--refresh-cookies', action='store_true', help='Force refresh cookies')
     args = parser.parse_args()
     
     if args.workers:
         CONFIG['MAX_WORKERS'] = args.workers
     
     logger = setup_logging()
-    
     scraper = IncrementalScraper(logger, dry_run=args.dry_run)
     
     if args.refresh_cookies:
-        logger.info("Forcing cookie refresh...")
-        if scraper.refresh_cookies_with_playwright():
-            logger.info("Cookies refreshed successfully!")
-        else:
-            logger.error("Failed to refresh cookies")
+        logger.info("Refreshing cookies...")
+        if not scraper.refresh_cookies_with_playwright():
             sys.exit(1)
     
     max_listings = 10 if args.test else args.max
-    
     result = scraper.run(max_new_listings=max_listings)
     
-    if result['error_count'] > result['new_count']:
-        sys.exit(1)
-    sys.exit(0)
+    sys.exit(1 if result['error_count'] > result['new_count'] else 0)
 
 
 if __name__ == '__main__':
