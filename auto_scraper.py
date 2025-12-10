@@ -335,12 +335,23 @@ class AutoScraper:
             response = session.get(url, timeout=30)
             response.raise_for_status()
             
+            # Debug: Check response size and content type
+            logger.info(f"Response size: {len(response.text)} bytes, Content-Type: {response.headers.get('Content-Type')}")
+            
             # Extract JSON data from __NEXT_DATA__ script tag
-            pattern = r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>'
+            pattern = r'<script id=\"__NEXT_DATA__\" type=\"application/json\">(.+?)</script>'
             match = re.search(pattern, response.text, re.DOTALL)
             
             if not match:
                 logger.warning(f"⚠️ No __NEXT_DATA__ found on page {page}")
+                # Debug: Save HTML to file for inspection
+                debug_file = f'/app/data/debug_page_{page}.html'
+                try:
+                    with open(debug_file, 'w', encoding='utf-8') as f:
+                        f.write(response.text)
+                    logger.info(f"Saved HTML to {debug_file} for debugging")
+                except:
+                    pass
                 return [], False
             
             data = json.loads(match.group(1))
