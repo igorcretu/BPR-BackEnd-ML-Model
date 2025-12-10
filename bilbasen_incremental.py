@@ -382,41 +382,78 @@ class IncrementalScraper:
         return f"{CONFIG['BASE_URL']}?{query_string}"
     
     def extract_listings_from_html(self, html_content: str) -> List[Dict]:
-        """Extract listings from search page HTML."""
+        """Extract listings from search page HTML using JSON-LD ItemList."""
         listings = []
         
+        # Try JSON-LD ItemList format (current bilbasen format)
+        pattern = r'<script type="application/ld\+json">(\{"@context":"https://schema\.org","@type":"ItemList"[^<]+)</script>'
+        match = re.search(pattern, html_content)
+        
+        if match:
+            try:
+                data = json.loads(match.group(1))
+                items = data.get('itemListElement', [])
+                
+                for item in items:
+                    url = item.get('url', '')
+                    if url:
+                        external_id = url.rstrip('/').split('/')[-1]
+                        
+                        # Get first image from images array
+                        images = item.get('image', [])
+                        image_url = ''
+                        if images and isinstance(images, list):
+                            # Skip placeholder images
+                            for img in images:
+                                if img and 'billeder.bilbasen.dk' in img:
+                                    image_url = img
+                                    break
+                        
+                        listings.append({
+                            'uri': url,
+                            'image_url': image_url,
+                            'external_id': external_id
+                        })
+                
+                self.logger.debug(f"Extracted {len(listings)} listings from JSON-LD")
+                return listings
+                
+            except json.JSONDecodeError as e:
+                self.logger.error(f"JSON parse error in ItemList: {e}")
+        
+        # Fallback: Try old __NEXT_DATA__ format
         pattern = r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>'
         match = re.search(pattern, html_content, re.DOTALL)
         
-        if not match:
-            return listings
-        
-        try:
-            data = json.loads(match.group(1))
-            queries = data.get('props', {}).get('pageProps', {}).get('dehydratedState', {}).get('queries', [])
-            
-            for query in queries:
-                state_data = query.get('state', {}).get('data', {})
-                if 'listings' in state_data:
-                    raw_listings = state_data['listings']
-                    
-                    for item in raw_listings:
-                        uri = item.get('uri', '')
-                        image_url = ''
-                        for media in item.get('media', []):
-                            if media.get('mediaType') == 'Picture':
-                                image_url = media.get('url', '')
-                                break
-                        if uri:
-                            external_id = uri.rstrip('/').split('/')[-1]
-                            listings.append({
-                                'uri': uri,
-                                'image_url': image_url,
-                                'external_id': external_id
-                            })
-                    break
-        except Exception as e:
-            self.logger.error(f"Error extracting listings: {e}")
+        if match:
+            try:
+                data = json.loads(match.group(1))
+                queries = data.get('props', {}).get('pageProps', {}).get('dehydratedState', {}).get('queries', [])
+                
+                for query in queries:
+                    state_data = query.get('state', {}).get('data', {})
+                    if 'listings' in state_data:
+                        raw_listings = state_data['listings']
+                        
+                        for item in raw_listings:
+                            uri = item.get('uri', '')
+                            image_url = ''
+                            for media in item.get('media', []):
+                                if media.get('mediaType') == 'Picture':
+                                    image_url = media.get('url', '')
+                                    break
+                            if uri:
+                                external_id = uri.rstrip('/').split('/')[-1]
+                                listings.append({
+                                    'uri': uri,
+                                    'image_url': image_url,
+                                    'external_id': external_id
+                                })
+                        break
+                        
+                self.logger.debug(f"Extracted {len(listings)} listings from __NEXT_DATA__")
+            except Exception as e:
+                self.logger.error(f"Error extracting from __NEXT_DATA__: {e}")
         
         return listings
     
