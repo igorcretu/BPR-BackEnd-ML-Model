@@ -42,11 +42,18 @@ import threading
 load_dotenv()
 
 # Setup logging
+# Determine log file path based on environment
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if os.path.exists('/app/data'):
+    log_path = '/app/data/auto_scraper.log'
+else:
+    log_path = os.path.join(script_dir, '..', 'bilbasen_scrape', 'auto_scraper.log')
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('auto_scraper.log'),
+        logging.FileHandler(log_path),
         logging.StreamHandler()
     ]
 )
