@@ -40,25 +40,26 @@ load_dotenv()
 # ============================================================================
 
 CONFIG = {
-    # Base URL for newest listings (sorted by date descending)
+    # Base URL with sorting (newest first)
+    'SORTED_URL': 'https://www.bilbasen.dk/brugt/bil?includeengroscvr=true&includeleasing=false&sortby=date&sortorder=desc',
     'BASE_URL': 'https://www.bilbasen.dk/brugt/bil',
-    'SEARCH_PARAMS': {
-        'includeengroscvr': 'true',
-        'includeleasing': 'false',
-        'sortby': 'date',
-        'sortorder': 'desc'
-    },
     
     'ITEMS_PER_PAGE': 30,
-    'MAX_PAGES': 100,  # Safety limit
+    'MAX_PAGES': 200,  # Safety limit - should stop much earlier when hitting known IDs
     
     # Delays (be respectful)
-    'DELAY_BETWEEN_REQUESTS': (1.0, 2.5),
+    'DELAY_BETWEEN_PAGES': (1.0, 2.0),
     'DELAY_BETWEEN_DETAILS': (1.0, 2.0),
     
     # Retry settings
     'MAX_RETRIES': 3,
     'RETRY_DELAY_BASE': 5,
+    
+    # Stop when we hit this many consecutive known IDs
+    'KNOWN_ID_STOP_THRESHOLD': 60,  # 2 full pages of known IDs = we've caught up
+    
+    # Cookie file for WAF token
+    'COOKIE_FILE': 'bilbasen_cookies.json',
     
     # Output
     'LOG_DIR': 'logs',
@@ -327,16 +328,78 @@ class IncrementalScraper:
             'user': os.getenv('POSTGRES_USER', 'bpr_user'),
             'password': os.getenv('POSTGRES_PASSWORD', 'postgres')
         }
+        self.cookies = {}
+        self.load_cookies()
     
     def get_headers(self) -> Dict[str, str]:
         """Get request headers."""
         return {
-            'User-Agent': 'Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'da-DK,da;q=0.9,en-US;q=0.8,en;q=0.7',
             'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Upgrade-Insecure-Requests': '1',
         }
+    
+    def load_cookies(self):
+        """Load cookies from file if exists."""
+        cookie_path = CONFIG['COOKIE_FILE']
+        if os.path.exists(cookie_path):
+            try:
+                with open(cookie_path, 'r') as f:
+                    self.cookies = json.load(f)
+                self.logger.info(f"Loaded cookies from {cookie_path}")
+            except Exception as e:
+                self.logger.warning(f"Failed to load cookies: {e}")
+                self.cookies = {}
+    
+    def save_cookies(self):
+        """Save cookies to file."""
+        cookie_path = CONFIG['COOKIE_FILE']
+        try:
+            with open(cookie_path, 'w') as f:
+                json.dump(self.cookies, f)
+            self.logger.info(f"Saved cookies to {cookie_path}")
+        except Exception as e:
+            self.logger.warning(f"Failed to save cookies: {e}")
+    
+    def refresh_cookies_with_playwright(self) -> bool:
+        """Use Playwright to get fresh WAF cookies."""
+        self.logger.info("Refreshing cookies with Playwright...")
+        try:
+            from playwright.sync_api import sync_playwright
+            
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context()
+                page = context.new_page()
+                
+                # Visit the sorted page to trigger WAF and get cookies
+                page.goto(CONFIG['SORTED_URL'], wait_until='networkidle')
+                
+                # Extract cookies
+                cookies = context.cookies()
+                self.cookies = {}
+                for cookie in cookies:
+                    self.cookies[cookie['name']] = cookie['value']
+                
+                browser.close()
+            
+            self.save_cookies()
+            self.logger.info(f"Got {len(self.cookies)} cookies via Playwright")
+            return True
+            
+        except ImportError:
+            self.logger.error("Playwright not installed. Run: pip install playwright && playwright install chromium")
+            return False
+        except Exception as e:
+            self.logger.error(f"Playwright error: {e}")
+            return False
     
     def get_db_connection(self):
         """Get database connection."""
@@ -359,13 +422,24 @@ class IncrementalScraper:
             self.logger.error(f"Database error: {e}")
             return set()
     
-    def fetch_page(self, url: str) -> Optional[str]:
-        """Fetch a page with retry logic."""
+    def fetch_page(self, url: str, use_cookies: bool = True) -> Optional[str]:
+        """Fetch a page with retry logic and cookie support."""
         for attempt in range(CONFIG['MAX_RETRIES']):
             try:
-                response = self.session.get(url, headers=self.get_headers(), timeout=30)
+                cookies = self.cookies if use_cookies else {}
+                response = self.session.get(url, headers=self.get_headers(), cookies=cookies, timeout=30)
+                
+                # Check for WAF challenge (202 status)
+                if response.status_code == 202:
+                    if attempt == 0:
+                        self.logger.warning("WAF challenge detected, refreshing cookies...")
+                        if self.refresh_cookies_with_playwright():
+                            continue  # Retry with new cookies
+                    return None
+                
                 response.raise_for_status()
                 return response.text
+                
             except requests.RequestException as e:
                 delay = CONFIG['RETRY_DELAY_BASE'] * (attempt + 1)
                 self.logger.warning(f"Attempt {attempt + 1}/{CONFIG['MAX_RETRIES']} failed: {e}")
@@ -373,15 +447,238 @@ class IncrementalScraper:
                     time.sleep(delay)
         return None
     
-    def build_search_url(self, page: int = 1) -> str:
-        """Build search URL sorted by newest."""
-        params = CONFIG['SEARCH_PARAMS'].copy()
+    def build_sorted_url(self, page: int = 1) -> str:
+        """Build sorted search URL."""
+        url = CONFIG['SORTED_URL']
         if page > 1:
-            params['page'] = page
-        query_string = '&'.join(f"{k}={v}" for k, v in params.items())
-        return f"{CONFIG['BASE_URL']}?{query_string}"
+            url += f"&page={page}"
+        return url
     
     def extract_listings_from_html(self, html_content: str) -> List[Dict]:
+        """Extract listings from search page HTML using JSON-LD ItemList."""
+        listings = []
+        
+        # Try JSON-LD ItemList format (current bilbasen format)
+        # The JSON can be multi-line with whitespace, so we use DOTALL
+        pattern = r'<script type="application/ld\+json">\s*(\{[^<]*"@type"\s*:\s*"ItemList"[^<]*\})\s*</script>'
+        match = re.search(pattern, html_content, re.DOTALL)
+        
+        if match:
+            try:
+                data = json.loads(match.group(1))
+                items = data.get('itemListElement', [])
+                
+                for item in items:
+                    url = item.get('url', '')
+                    if url:
+                        external_id = url.rstrip('/').split('/')[-1]
+                        
+                        # Get first image from images array
+                        images = item.get('image', [])
+                        image_url = ''
+                        if images and isinstance(images, list):
+                            # Skip placeholder images
+                            for img in images:
+                                if img and 'billeder.bilbasen.dk' in img:
+                                    image_url = img
+                                    break
+                        
+                        listings.append({
+                            'uri': url,
+                            'image_url': image_url,
+                            'external_id': external_id
+                        })
+                
+                self.logger.debug(f"Extracted {len(listings)} listings from JSON-LD")
+                return listings
+                
+            except json.JSONDecodeError as e:
+                self.logger.error(f"JSON parse error in ItemList: {e}")
+        
+        # Fallback: Try old __NEXT_DATA__ format
+        pattern = r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>'
+        match = re.search(pattern, html_content, re.DOTALL)
+        
+        if match:
+            try:
+                data = json.loads(match.group(1))
+                queries = data.get('props', {}).get('pageProps', {}).get('dehydratedState', {}).get('queries', [])
+                
+                for query in queries:
+                    state_data = query.get('state', {}).get('data', {})
+                    if 'listings' in state_data:
+                        raw_listings = state_data['listings']
+                        
+                        for item in raw_listings:
+                            uri = item.get('uri', '')
+                            image_url = ''
+                            for media in item.get('media', []):
+                                if media.get('mediaType') == 'Picture':
+                                    image_url = media.get('url', '')
+                                    break
+                            if uri:
+                                external_id = uri.rstrip('/').split('/')[-1]
+                                listings.append({
+                                    'uri': uri,
+                                    'image_url': image_url,
+                                    'external_id': external_id
+                                })
+                        break
+                        
+                self.logger.debug(f"Extracted {len(listings)} listings from __NEXT_DATA__")
+            except Exception as e:
+                self.logger.error(f"Error extracting from __NEXT_DATA__: {e}")
+        
+        return listings
+    
+    def scrape_new_listings(self, known_ids: set) -> List[Dict]:
+        """Scrape sorted listings until we hit known IDs."""
+        new_listings = []
+        page = 1
+        consecutive_known = 0
+        
+        while page <= CONFIG['MAX_PAGES']:
+            url = self.build_sorted_url(page)
+            self.logger.info(f"Fetching page {page}...")
+            
+            html = self.fetch_page(url)
+            if not html:
+                self.logger.warning(f"Failed to fetch page {page}")
+                break
+            
+            listings = self.extract_listings_from_html(html)
+            if not listings:
+                self.logger.info("No more listings found")
+                break
+            
+            page_new = 0
+            page_known = 0
+            
+            for listing in listings:
+                if listing['external_id'] not in known_ids:
+                    new_listings.append(listing)
+                    page_new += 1
+                    consecutive_known = 0
+                else:
+                    page_known += 1
+                    consecutive_known += 1
+            
+            self.logger.info(f"  Page {page}: {page_new} new, {page_known} known (consecutive: {consecutive_known})")
+            
+            # Stop if we've hit many consecutive known IDs (we've caught up)
+            if consecutive_known >= CONFIG['KNOWN_ID_STOP_THRESHOLD']:
+                self.logger.info(f"Hit {consecutive_known} consecutive known IDs - caught up!")
+                break
+            
+            if len(listings) < CONFIG['ITEMS_PER_PAGE']:
+                break  # Last page
+            
+            page += 1
+            time.sleep(random.uniform(*CONFIG['DELAY_BETWEEN_PAGES']))
+        
+        return new_listings
+    
+    def run(self, max_new_listings: int = None) -> Dict:
+        """
+        Run the incremental scraper - scrapes newest listings until hitting known IDs.
+        
+        Returns dict with stats: {new_count, skipped_count, error_count, duration}
+        """
+        start_time = time.time()
+        
+        self.logger.info("=" * 60)
+        self.logger.info("INCREMENTAL SCRAPER STARTED")
+        self.logger.info(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if self.dry_run:
+            self.logger.info("MODE: DRY RUN (no database changes)")
+        self.logger.info("=" * 60)
+        
+        # Get known IDs from database
+        known_ids = self.get_known_external_ids()
+        
+        if not known_ids and not self.dry_run:
+            self.logger.warning("No existing cars in database. Run the full scraper first!")
+            return {'new_count': 0, 'skipped_count': 0, 'error_count': 0, 'duration': 0}
+        
+        # Phase 1: Find new listings by scraping sorted page
+        self.logger.info("\n--- Phase 1: Finding new listings (sorted by newest) ---")
+        
+        new_listings = self.scrape_new_listings(known_ids)
+        
+        self.logger.info(f"\nTotal new listings found: {len(new_listings)}")
+        
+        if max_new_listings and len(new_listings) > max_new_listings:
+            new_listings = new_listings[:max_new_listings]
+            self.logger.info(f"Limited to: {len(new_listings)}")
+        
+        if not new_listings:
+            duration = time.time() - start_time
+            self.logger.info(f"\nNo new listings to process. Duration: {duration:.1f}s")
+            return {'new_count': 0, 'skipped_count': 0, 'error_count': 0, 'duration': duration}
+        
+        # Phase 2: Extract details and insert to database
+        self.logger.info("\n--- Phase 2: Extracting details and importing ---")
+        
+        new_count = 0
+        skipped_count = 0
+        error_count = 0
+        
+        for idx, listing in enumerate(new_listings):
+            self.logger.info(f"[{idx+1}/{len(new_listings)}] Processing {listing['external_id']}...")
+            
+            # Fetch car page (don't need WAF cookies for individual car pages)
+            html = self.fetch_page(listing['uri'], use_cookies=False)
+            if not html:
+                self.logger.warning(f"  Failed to fetch car page")
+                error_count += 1
+                continue
+            
+            # Extract details
+            raw_data = self.extract_car_details(html, listing['uri'], listing['image_url'])
+            if not raw_data:
+                self.logger.warning(f"  Failed to extract details")
+                error_count += 1
+                continue
+            
+            # Process into database format
+            car_data = self.process_car_data(raw_data)
+            if not car_data:
+                self.logger.warning(f"  Failed to process data (missing required fields)")
+                skipped_count += 1
+                continue
+            
+            # Insert to database
+            if self.insert_car_to_db(car_data):
+                new_count += 1
+                self.logger.info(f"  Inserted: {car_data['brand']} {car_data['model']} - {car_data['price']} kr")
+                
+                # Download image
+                if listing['image_url']:
+                    img_path = os.path.join(CONFIG['IMAGES_DIR'], f"{listing['external_id']}.jpg")
+                    if not os.path.exists(img_path):
+                        self.download_image(listing['image_url'], img_path)
+            else:
+                skipped_count += 1
+            
+            time.sleep(random.uniform(*CONFIG['DELAY_BETWEEN_DETAILS']))
+        
+        duration = time.time() - start_time
+        
+        # Summary
+        self.logger.info("\n" + "=" * 60)
+        self.logger.info("INCREMENTAL SCRAPER COMPLETED")
+        self.logger.info(f"New cars inserted: {new_count}")
+        self.logger.info(f"Skipped (duplicates/invalid): {skipped_count}")
+        self.logger.info(f"Errors: {error_count}")
+        self.logger.info(f"Duration: {duration:.1f}s ({duration/60:.1f}m)")
+        self.logger.info("=" * 60)
+        
+        return {
+            'new_count': new_count,
+            'skipped_count': skipped_count,
+            'error_count': error_count,
+            'duration': duration
+        }
         """Extract listings from search page HTML using JSON-LD ItemList."""
         listings = []
         
@@ -940,13 +1237,24 @@ def main():
     parser.add_argument('--test', action='store_true', help='Test mode (limit to 10 new listings)')
     parser.add_argument('--dry-run', action='store_true', help='Dry run (no database changes)')
     parser.add_argument('--max', type=int, default=None, help='Maximum new listings to process')
+    parser.add_argument('--refresh-cookies', action='store_true', help='Force refresh WAF cookies using Playwright')
     args = parser.parse_args()
     
     logger = setup_logging()
     
+    scraper = IncrementalScraper(logger, dry_run=args.dry_run)
+    
+    # Force refresh cookies if requested
+    if args.refresh_cookies:
+        logger.info("Forcing cookie refresh...")
+        if scraper.refresh_cookies_with_playwright():
+            logger.info("Cookies refreshed successfully!")
+        else:
+            logger.error("Failed to refresh cookies")
+            sys.exit(1)
+    
     max_listings = 10 if args.test else args.max
     
-    scraper = IncrementalScraper(logger, dry_run=args.dry_run)
     result = scraper.run(max_new_listings=max_listings)
     
     # Exit code based on results
