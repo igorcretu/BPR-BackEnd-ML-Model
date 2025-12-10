@@ -325,7 +325,13 @@ class AutoScraper:
             url = f"{BASE_URL}?{'&'.join([f'{k}={v}' for k, v in params.items()])}"
             logger.info(f"📄 Scraping page {page}: {url}")
             
-            response = self.session.get(url, timeout=30)
+            # Create session for this request
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            })
+            
+            response = session.get(url, timeout=30)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.content, 'html.parser')
