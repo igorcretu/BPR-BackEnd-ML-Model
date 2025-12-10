@@ -386,8 +386,9 @@ class IncrementalScraper:
         listings = []
         
         # Try JSON-LD ItemList format (current bilbasen format)
-        pattern = r'<script type="application/ld\+json">(\{"@context":"https://schema\.org","@type":"ItemList"[^<]+)</script>'
-        match = re.search(pattern, html_content)
+        # The JSON can be multi-line with whitespace, so we use DOTALL and look for the ItemList type
+        pattern = r'<script type="application/ld\+json">\s*(\{[^<]*"@type"\s*:\s*"ItemList"[^<]*\})\s*</script>'
+        match = re.search(pattern, html_content, re.DOTALL)
         
         if match:
             try:
