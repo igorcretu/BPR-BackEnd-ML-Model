@@ -588,6 +588,7 @@ class BilbasenScraper:
                         future_to_combo[future] = (idx, combo)
                 
                 # Process completed tasks
+                last_checkpoint = completed
                 for future in as_completed(future_to_combo):
                     if self.stop_requested:
                         self.logger.warning("Stop requested, cancelling pending tasks...")
@@ -615,11 +616,12 @@ class BilbasenScraper:
                                        f"Fuel: {combo['fuel_name']} | ETA: {remaining_est}")
                         self.logger.info(f"  -> New: {len(new_listings)}, Total: {current_total}")
                         
-                        # Save checkpoint periodically
-                        if current_completed % CONFIG['CHECKPOINT_INTERVAL_COMBOS'] == 0:
+                        # Save checkpoint only when enough NEW combos completed since last checkpoint
+                        if current_completed - last_checkpoint >= CONFIG['CHECKPOINT_INTERVAL_COMBOS']:
                             with self.lock:
                                 self.save_links_checkpoint(completed_combos, all_listings, seen_uris)
                                 self.logger.info(f"  -> Checkpoint saved")
+                                last_checkpoint = current_completed
                         
                         # Slight delay between combo completions
                         time.sleep(random.uniform(*CONFIG['DELAY_BETWEEN_COMBOS']))
@@ -790,6 +792,7 @@ class BilbasenScraper:
                 
                 # Process completed tasks
                 completed_count = 0
+                last_checkpoint = 0
                 for future in as_completed(future_to_listing):
                     if self.stop_requested:
                         self.logger.warning("Stop requested, cancelling pending tasks...")
@@ -816,11 +819,12 @@ class BilbasenScraper:
                         if completed_count % 100 == 0 or completed_count == 1:
                             self.logger.info(f"[{completed_count}/{total}] Processing... | ETA: {remaining_est}")
                         
-                        # Save checkpoint periodically
-                        if completed_count % CONFIG['CHECKPOINT_INTERVAL_CARS'] == 0:
+                        # Save checkpoint only when we've processed enough NEW cars since last checkpoint
+                        if completed_count - last_checkpoint >= CONFIG['CHECKPOINT_INTERVAL_CARS']:
                             with self.lock:
                                 self.save_details_checkpoint(processed_ids, all_details)
                                 self.logger.info(f"  -> Checkpoint saved ({current_total} cars)")
+                                last_checkpoint = completed_count
                         
                     except Exception as e:
                         self.logger.error(f"Error processing {external_id}: {e}")
