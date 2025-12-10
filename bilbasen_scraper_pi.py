@@ -30,6 +30,8 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Tuple, Optional, Any
 import random
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 # ============================================================================
 # CONFIGURATION
@@ -69,14 +71,18 @@ CONFIG = {
     'ITEMS_PER_PAGE': 30,
     'MAX_PAGES': 100,
     
-    # Delays (seconds) - be nice to the server
-    'DELAY_BETWEEN_REQUESTS': (1.5, 3.5),
-    'DELAY_BETWEEN_COMBOS': (3, 6),
-    'DELAY_BETWEEN_CARS': (1.5, 3.5),
+    # Delays (seconds) - reduced for multi-threaded scraping
+    'DELAY_BETWEEN_REQUESTS': (0.3, 0.8),
+    'DELAY_BETWEEN_COMBOS': (0.5, 1.5),
+    'DELAY_BETWEEN_CARS': (0.2, 0.6),
+    
+    # Threading
+    'MAX_WORKERS_PHASE1': 8,  # Parallel workers for link scraping
+    'MAX_WORKERS_PHASE2': 12,  # Parallel workers for detail scraping
     
     # Checkpoints
     'CHECKPOINT_INTERVAL_COMBOS': 10,
-    'CHECKPOINT_INTERVAL_CARS': 25,
+    'CHECKPOINT_INTERVAL_CARS': 50,  # Increased for better performance
     
     # Retry settings
     'MAX_RETRIES': 5,
@@ -276,9 +282,9 @@ class BilbasenScraper:
     def __init__(self, output_dir: str, logger: logging.Logger):
         self.output_dir = output_dir
         self.logger = logger
-        self.session = requests.Session()
         self.start_time = None
         self.stop_requested = False
+        self.lock = threading.Lock()  # For thread-safe operations
         
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -290,17 +296,17 @@ class BilbasenScraper:
         self.stop_requested = True
     
     def fetch_page(self, url: str) -> Optional[str]:
-        """Fetch a page with retry logic."""
+        """Fetch a page with retry logic. Thread-safe with individual sessions."""
+        # Create a session per thread for thread safety
+        session = requests.Session()
         for attempt in range(CONFIG['MAX_RETRIES']):
             try:
-                response = self.session.get(url, headers=get_headers(), timeout=30)
+                response = session.get(url, headers=get_headers(), timeout=30)
                 response.raise_for_status()
                 return response.text
             except requests.RequestException as e:
                 delay = CONFIG['RETRY_DELAY_BASE'] * (attempt + 1)
-                self.logger.warning(f"Attempt {attempt + 1}/{CONFIG['MAX_RETRIES']} failed: {e}")
                 if attempt < CONFIG['MAX_RETRIES'] - 1:
-                    self.logger.info(f"Retrying in {delay}s...")
                     time.sleep(delay)
         return None
     
@@ -552,9 +558,9 @@ class BilbasenScraper:
         return all_listings
     
     def run_phase1(self) -> List[Dict]:
-        """Run Phase 1: Links scraping."""
+        """Run Phase 1: Links scraping with multi-threading."""
         self.logger.info("=" * 60)
-        self.logger.info("PHASE 1: Scraping listing URLs")
+        self.logger.info("PHASE 1: Scraping listing URLs (Multi-threaded)")
         self.logger.info("=" * 60)
         
         self.start_time = time.time()
@@ -569,42 +575,63 @@ class BilbasenScraper:
         self.logger.info(f"Already completed: {completed}")
         self.logger.info(f"Remaining: {total - completed}")
         self.logger.info(f"Current listings: {len(all_listings)}")
+        self.logger.info(f"Workers: {CONFIG['MAX_WORKERS_PHASE1']}")
         self.logger.info("-" * 60)
         
         try:
-            for idx, combo in enumerate(all_combos):
-                if self.stop_requested:
-                    self.logger.warning("Stop requested, saving checkpoint...")
-                    break
+            with ThreadPoolExecutor(max_workers=CONFIG['MAX_WORKERS_PHASE1']) as executor:
+                # Submit all pending combinations
+                future_to_combo = {}
+                for idx, combo in enumerate(all_combos):
+                    if idx not in completed_combos:
+                        future = executor.submit(self.scrape_filter_combination, combo, seen_uris)
+                        future_to_combo[future] = (idx, combo)
+                
+                # Process completed tasks
+                for future in as_completed(future_to_combo):
+                    if self.stop_requested:
+                        self.logger.warning("Stop requested, cancelling pending tasks...")
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
                     
-                if idx in completed_combos:
-                    continue
-                
-                elapsed = time.time() - self.start_time
-                remaining_est = estimate_remaining_time(len(completed_combos) - completed + 1, 
-                                                        total - completed, elapsed)
-                
-                self.logger.info(f"[{idx+1}/{total}] Year: {combo['year_from']}-{combo['year_to']}, "
-                               f"Price: {combo['price_from']:,}-{combo['price_to']:,}, "
-                               f"Fuel: {combo['fuel_name']} | ETA: {remaining_est}")
-                
-                new_listings = self.scrape_filter_combination(combo, seen_uris)
-                all_listings.extend(new_listings)
-                
-                self.logger.info(f"  -> New: {len(new_listings)}, Total: {len(all_listings)}")
-                
-                completed_combos.append(idx)
-                
-                if len(completed_combos) % CONFIG['CHECKPOINT_INTERVAL_COMBOS'] == 0:
-                    self.save_links_checkpoint(completed_combos, all_listings, seen_uris)
-                    self.logger.info(f"  -> Checkpoint saved")
-                
-                time.sleep(random.uniform(*CONFIG['DELAY_BETWEEN_COMBOS']))
-                
+                    idx, combo = future_to_combo[future]
+                    
+                    try:
+                        new_listings = future.result()
+                        
+                        # Thread-safe update of shared state
+                        with self.lock:
+                            all_listings.extend(new_listings)
+                            completed_combos.append(idx)
+                            current_completed = len(completed_combos)
+                            current_total = len(all_listings)
+                        
+                        elapsed = time.time() - self.start_time
+                        remaining_est = estimate_remaining_time(current_completed - completed, 
+                                                                total - completed, elapsed)
+                        
+                        self.logger.info(f"[{idx+1}/{total}] Year: {combo['year_from']}-{combo['year_to']}, "
+                                       f"Price: {combo['price_from']:,}-{combo['price_to']:,}, "
+                                       f"Fuel: {combo['fuel_name']} | ETA: {remaining_est}")
+                        self.logger.info(f"  -> New: {len(new_listings)}, Total: {current_total}")
+                        
+                        # Save checkpoint periodically
+                        if current_completed % CONFIG['CHECKPOINT_INTERVAL_COMBOS'] == 0:
+                            with self.lock:
+                                self.save_links_checkpoint(completed_combos, all_listings, seen_uris)
+                                self.logger.info(f"  -> Checkpoint saved")
+                        
+                        # Slight delay between combo completions
+                        time.sleep(random.uniform(*CONFIG['DELAY_BETWEEN_COMBOS']))
+                        
+                    except Exception as e:
+                        self.logger.error(f"Error processing combo {idx+1}: {e}")
+                        
         except Exception as e:
             self.logger.error(f"Error in Phase 1: {e}")
         finally:
-            self.save_links_checkpoint(completed_combos, all_listings, seen_uris)
+            with self.lock:
+                self.save_links_checkpoint(completed_combos, all_listings, seen_uris)
         
         elapsed = time.time() - self.start_time
         self.logger.info("=" * 60)
@@ -692,10 +719,34 @@ class BilbasenScraper:
             writer.writeheader()
             writer.writerows(details)
     
+    def process_single_car(self, listing: Dict, images_dir: str, download_images: bool) -> Optional[Dict]:
+        """Process a single car listing. Thread-safe method."""
+        car_url = listing['uri']
+        image_url = listing.get('image_url', '')
+        external_id = listing.get('external_id', '')
+        
+        html = self.fetch_page(car_url)
+        if not html:
+            self.logger.warning(f"  Failed to fetch {external_id}")
+            return None
+        
+        details = self.extract_car_details(html, car_url, image_url)
+        
+        # Download image if requested
+        if details and download_images and image_url:
+            img_path = os.path.join(images_dir, f"{external_id}.jpg")
+            if not os.path.exists(img_path):
+                self.download_image(image_url, img_path)
+        
+        # Small delay to be respectful
+        time.sleep(random.uniform(*CONFIG['DELAY_BETWEEN_CARS']))
+        
+        return details
+    
     def run_phase2(self, download_images: bool = True) -> List[Dict]:
-        """Run Phase 2: Car details scraping."""
+        """Run Phase 2: Car details scraping with multi-threading."""
         self.logger.info("=" * 60)
-        self.logger.info("PHASE 2: Extracting car details")
+        self.logger.info("PHASE 2: Extracting car details (Multi-threaded)")
         self.logger.info("=" * 60)
         
         self.start_time = time.time()
@@ -726,51 +777,59 @@ class BilbasenScraper:
         
         self.logger.info(f"Already processed: {len(processed_ids)}")
         self.logger.info(f"Remaining: {total}")
+        self.logger.info(f"Workers: {CONFIG['MAX_WORKERS_PHASE2']}")
         self.logger.info("-" * 60)
         
         try:
-            for idx, listing in enumerate(remaining):
-                if self.stop_requested:
-                    self.logger.warning("Stop requested, saving checkpoint...")
-                    break
+            with ThreadPoolExecutor(max_workers=CONFIG['MAX_WORKERS_PHASE2']) as executor:
+                # Submit all pending listings
+                future_to_listing = {}
+                for listing in remaining:
+                    future = executor.submit(self.process_single_car, listing, images_dir, download_images)
+                    future_to_listing[future] = listing
                 
-                car_url = listing['uri']
-                image_url = listing.get('image_url', '')
-                external_id = listing.get('external_id', '')
-                
-                elapsed = time.time() - self.start_time
-                remaining_est = estimate_remaining_time(idx + 1, total, elapsed)
-                
-                if (idx + 1) % 100 == 0 or idx == 0:
-                    self.logger.info(f"[{idx+1}/{total}] Processing... | ETA: {remaining_est}")
-                
-                html = self.fetch_page(car_url)
-                if not html:
-                    self.logger.warning(f"  Failed to fetch {external_id}")
-                    continue
-                
-                details = self.extract_car_details(html, car_url, image_url)
-                if details:
-                    all_details.append(details)
+                # Process completed tasks
+                completed_count = 0
+                for future in as_completed(future_to_listing):
+                    if self.stop_requested:
+                        self.logger.warning("Stop requested, cancelling pending tasks...")
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
                     
-                    # Download image
-                    if download_images and image_url:
-                        img_path = os.path.join(images_dir, f"{external_id}.jpg")
-                        if not os.path.exists(img_path):
-                            self.download_image(image_url, img_path)
-                
-                processed_ids.append(external_id)
-                
-                if len(processed_ids) % CONFIG['CHECKPOINT_INTERVAL_CARS'] == 0:
-                    self.save_details_checkpoint(processed_ids, all_details)
-                    self.logger.info(f"  -> Checkpoint saved ({len(all_details)} cars)")
-                
-                time.sleep(random.uniform(*CONFIG['DELAY_BETWEEN_CARS']))
-                
+                    listing = future_to_listing[future]
+                    external_id = listing.get('external_id', '')
+                    
+                    try:
+                        details = future.result()
+                        
+                        # Thread-safe update
+                        with self.lock:
+                            if details:
+                                all_details.append(details)
+                            processed_ids.append(external_id)
+                            completed_count += 1
+                            current_total = len(all_details)
+                        
+                        elapsed = time.time() - self.start_time
+                        remaining_est = estimate_remaining_time(completed_count, total, elapsed)
+                        
+                        if completed_count % 100 == 0 or completed_count == 1:
+                            self.logger.info(f"[{completed_count}/{total}] Processing... | ETA: {remaining_est}")
+                        
+                        # Save checkpoint periodically
+                        if completed_count % CONFIG['CHECKPOINT_INTERVAL_CARS'] == 0:
+                            with self.lock:
+                                self.save_details_checkpoint(processed_ids, all_details)
+                                self.logger.info(f"  -> Checkpoint saved ({current_total} cars)")
+                        
+                    except Exception as e:
+                        self.logger.error(f"Error processing {external_id}: {e}")
+                        
         except Exception as e:
             self.logger.error(f"Error in Phase 2: {e}")
         finally:
-            self.save_details_checkpoint(processed_ids, all_details)
+            with self.lock:
+                self.save_details_checkpoint(processed_ids, all_details)
         
         elapsed = time.time() - self.start_time
         self.logger.info("=" * 60)
