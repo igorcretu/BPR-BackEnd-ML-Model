@@ -49,7 +49,7 @@ CONFIG = {
     'COOKIE_FILE': 'bilbasen_cookies.json',
     
     'LOG_DIR': 'logs',
-    'IMAGES_DIR': 'images',
+    'IMAGES_DIR': 'bilbasen_scrape/images',  # Match manual scraper path
 }
 
 # Danish to English translation map (from full scraper)
