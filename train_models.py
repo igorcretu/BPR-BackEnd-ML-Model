@@ -364,7 +364,7 @@ class ModelTrainer:
         
         # Try different alpha values to find the best one
         from sklearn.linear_model import RidgeCV
-        best_alpha = RidgeCV(alphas=[0.001, 0.01, 0.1, 1.0, 10.0, 100.0], cv=5).fit(
+        best_alpha = RidgeCV(alphas=[0.01, 0.1, 1.0, 10.0, 50.0], cv=5).fit(
             self.X_train, self.y_train
         ).alpha_
         logger.info(f"Best alpha for Ridge: {best_alpha}")
@@ -404,7 +404,7 @@ class ModelTrainer:
         
         # Try different alpha values to find the best one
         from sklearn.linear_model import LassoCV
-        best_alpha = LassoCV(alphas=[0.1, 1.0, 10.0, 100.0, 1000.0], cv=5, max_iter=10000).fit(
+        best_alpha = LassoCV(alphas=[0.1, 1.0, 10.0, 50.0, 100.0], cv=5, max_iter=10000).fit(
             self.X_train, self.y_train
         ).alpha_
         logger.info(f"Best alpha for Lasso: {best_alpha}")
@@ -761,8 +761,7 @@ class ModelTrainer:
                         training_duration_seconds = %s,
                         status = %s,
                         models_trained = %s,
-                        best_model_id = %s,
-                        completed_at = NOW()
+                        best_model_id = %s
                     WHERE id = %s
                 """
                 
