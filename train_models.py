@@ -65,13 +65,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Database config
+# Database config - consistent with scraper
 DB_CONFIG = {
-    'dbname': os.getenv('DB_NAME', 'bpr_cars'),
-    'user': os.getenv('DB_USER', 'postgres'),
-    'password': os.getenv('DB_PASS', 'postgres'),
-    'host': os.getenv('DB_HOST', 'localhost'),
-    'port': os.getenv('DB_PORT', '5432')
+    'dbname': os.getenv('POSTGRES_DB', os.getenv('DB_NAME', 'car_prediction')),
+    'user': os.getenv('POSTGRES_USER', os.getenv('DB_USER', 'bpr_user')),
+    'password': os.getenv('POSTGRES_PASSWORD', os.getenv('DB_PASS', 'your_secure_password')),
+    'host': os.getenv('POSTGRES_HOST', os.getenv('DB_HOST', 'db')),
+    'port': os.getenv('POSTGRES_PORT', os.getenv('DB_PORT', '5432'))
 }
 
 # Model storage
@@ -107,12 +107,17 @@ class ModelTrainer:
     def connect_db(self):
         """Connect to database"""
         try:
+            logger.info(f"Connecting to database: {DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}")
             self.conn = psycopg2.connect(**DB_CONFIG)
             self.cur = self.conn.cursor()
-            logger.info("✅ Connected to database")
+            logger.info("✅ Connected to database successfully")
             return True
+        except psycopg2.OperationalError as e:
+            logger.error(f"❌ Database connection failed (OperationalError): {e}")
+            logger.error(f"Connection details: host={DB_CONFIG['host']}, port={DB_CONFIG['port']}, dbname={DB_CONFIG['dbname']}, user={DB_CONFIG['user']}")
+            return False
         except Exception as e:
-            logger.error(f"❌ Database connection failed: {e}")
+            logger.error(f"❌ Unexpected database connection error: {type(e).__name__}: {e}")
             return False
     
     def load_data(self):
@@ -598,28 +603,34 @@ class ModelTrainer:
     
     def log_training_run(self, dataset_size, status='completed'):
         """Log training run to database"""
-        train_size = len(self.X_train) if self.X_train is not None else 0
-        test_size = len(self.X_test) if self.X_test is not None else 0
-        duration = time.time() - self.start_time if self.start_time else 0
-        
-        query = """
-            INSERT INTO model_training_runs (
-                id, run_date, dataset_size, train_size, test_size,
-                training_duration_seconds, status, models_trained,
-                best_model_id, created_at
-            ) VALUES (
-                %s, NOW(), %s, %s, %s, %s, %s, %s, %s, NOW()
-            )
-        """
-        
-        self.cur.execute(query, (
-            self.training_run_id, dataset_size, train_size, test_size,
-            duration, status, json.dumps([m['name'] for m in self.models_trained]),
-            self.best_model_id
-        ))
-        
-        self.conn.commit()
-        logger.info(f"✅ Training run logged: {self.training_run_id}")
+        try:
+            train_size = len(self.X_train) if self.X_train is not None else 0
+            test_size = len(self.X_test) if self.X_test is not None else 0
+            duration = time.time() - self.start_time if self.start_time else 0
+            
+            query = """
+                INSERT INTO model_training_runs (
+                    id, run_date, dataset_size, train_size, test_size,
+                    training_duration_seconds, status, models_trained,
+                    best_model_id, created_at
+                ) VALUES (
+                    %s, NOW(), %s, %s, %s, %s, %s, %s, %s, NOW()
+                )
+            """
+            
+            self.cur.execute(query, (
+                self.training_run_id, dataset_size, train_size, test_size,
+                duration, status, json.dumps([m['name'] for m in self.models_trained]),
+                self.best_model_id
+            ))
+            
+            self.conn.commit()
+            logger.info(f"✅ Training run logged: {self.training_run_id}")
+        except Exception as e:
+            logger.error(f"❌ Failed to log training run: {e}")
+            # Don't fail the entire training just because logging failed
+            if self.conn:
+                self.conn.rollback()
     
     def run(self, models_to_train=None):
         """Main training orchestration"""
@@ -688,9 +699,19 @@ class ModelTrainer:
             return False
         
         finally:
-            if self.conn:
+            self.cleanup()
+    
+    def cleanup(self):
+        """Cleanup database connections"""
+        try:
+            if self.cur:
                 self.cur.close()
+                logger.info("Database cursor closed")
+            if self.conn:
                 self.conn.close()
+                logger.info("Database connection closed")
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
 
 
 def main():
