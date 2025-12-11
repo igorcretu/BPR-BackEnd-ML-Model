@@ -700,11 +700,15 @@ class ModelTrainer:
                 self.conn.rollback()
                 logger.debug("Transaction rolled back")
     
-    def update_training_progress(self, models_completed, total_models):
+    def update_training_progress(self, models_completed, total_models, detailed_message=None):
         """Update training progress in database for frontend polling"""
         try:
             # Update the running training entry with progress info
-            progress_info = f"{models_completed}/{total_models} models completed"
+            if detailed_message:
+                progress_info = detailed_message
+            else:
+                progress_info = f"{models_completed}/{total_models} models completed"
+            
             self.cur.execute("""
                 UPDATE model_training_runs 
                 SET notes = %s
@@ -843,7 +847,14 @@ class ModelTrainer:
             results = {}
             for i, model_name in enumerate(models_to_train, 1):
                 try:
-                    logger.info(f"[{i}/{len(models_to_train)}] Training {model_name.upper()}...")
+                    logger.info("")
+                    logger.info("=" * 60)
+                    logger.info(f"🤖 MODEL {i}/{len(models_to_train)}: {model_name.upper()}")
+                    logger.info("=" * 60)
+                    logger.info(f"⏱️  Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    logger.info(f"📊 Training samples: {len(self.X_train):,} | Test samples: {len(self.X_test):,}")
+                    logger.info(f"🎯 Target: Car price prediction")
+                    logger.info("")
                     model_start = time.time()
                     
                     if model_name == 'xgboost':
@@ -866,10 +877,20 @@ class ModelTrainer:
                     
                     model_duration = time.time() - model_start
                     results[model_name] = {'id': model_id, 'metrics': metrics}
-                    logger.info(f"✅ {model_name.upper()} completed in {model_duration:.2f}s - R²: {metrics['r2']:.4f}, MAE: {metrics['mae']:.2f}")
                     
-                    # Update progress in database for frontend
-                    self.update_training_progress(len(results), len(models_to_train))
+                    logger.info("")
+                    logger.info(f"✅ {model_name.upper()} TRAINING COMPLETED!")
+                    logger.info(f"⏱️  Duration: {model_duration:.2f}s ({model_duration/60:.1f} min)")
+                    logger.info(f"📈 R² Score: {metrics['r2']:.4f} (higher is better, max 1.0)")
+                    logger.info(f"📊 MAE: {metrics['mae']:,.2f} DKK (Mean Absolute Error)")
+                    logger.info(f"📊 RMSE: {metrics['rmse']:,.2f} DKK (Root Mean Squared Error)")
+                    logger.info(f"📊 MAPE: {metrics['mape']:.2f}% (Mean Absolute Percentage Error)")
+                    logger.info(f"🎯 Model ID: {model_id}")
+                    logger.info("=" * 60)
+                    
+                    # Update progress in database for frontend with detailed info
+                    progress_msg = f"{len(results)}/{len(models_to_train)} models | Latest: {model_name.upper()} - R²={metrics['r2']:.3f}, MAE={metrics['mae']:,.0f} DKK"
+                    self.update_training_progress(len(results), len(models_to_train), progress_msg)
                     logger.info("")
                     
                 except Exception as e:
