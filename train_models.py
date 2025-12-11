@@ -708,8 +708,11 @@ class ModelTrainer:
             self.cur.execute("""
                 UPDATE model_training_runs 
                 SET notes = %s
-                WHERE status = 'running'
-                ORDER BY created_at DESC LIMIT 1
+                WHERE id = (
+                    SELECT id FROM model_training_runs
+                    WHERE status = 'running'
+                    ORDER BY created_at DESC LIMIT 1
+                )
             """, (progress_info,))
             self.conn.commit()
             logger.debug(f"✅ Updated training progress: {progress_info}")
@@ -812,8 +815,11 @@ class ModelTrainer:
                 self.cur.execute("""
                     UPDATE model_training_runs 
                     SET status = 'running'
-                    WHERE status = 'pending'
-                    ORDER BY created_at DESC LIMIT 1
+                    WHERE id = (
+                        SELECT id FROM model_training_runs
+                        WHERE status = 'pending'
+                        ORDER BY created_at DESC LIMIT 1
+                    )
                 """)
                 self.conn.commit()
                 logger.info("✅ Updated training status to 'running'")
