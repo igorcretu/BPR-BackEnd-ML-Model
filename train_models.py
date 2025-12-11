@@ -198,6 +198,11 @@ class ModelTrainer:
         # Mileage per year (avoid division by zero)
         df['mileage_per_year'] = df['mileage'] / (df['age'] + 1)
         
+        # Additional engineered features for better predictions
+        df['age_squared'] = df['age'] ** 2
+        df['mileage_log'] = np.log1p(df['mileage'])  # log(1+x) to handle zeros
+        df['horsepower_mileage_ratio'] = df['horsepower'] / (df['mileage'] + 1)
+        
         # Clean numeric columns - replace inf and extremely large values
         logger.info("🧹 Cleaning numeric data...")
         numeric_cols_to_clean = ['mileage', 'horsepower', 'age', 'mileage_per_year', 'year']
@@ -236,7 +241,8 @@ class ModelTrainer:
         
         # Scale numeric features
         logger.debug("Scaling numeric features...")
-        numeric_cols = ['year', 'mileage', 'horsepower', 'age', 'mileage_per_year']
+        numeric_cols = ['year', 'mileage', 'horsepower', 'age', 'mileage_per_year', 
+                       'age_squared', 'mileage_log', 'horsepower_mileage_ratio']
         self.scaler = StandardScaler()
         df[numeric_cols] = self.scaler.fit_transform(df[numeric_cols])
         
@@ -562,6 +568,16 @@ class ModelTrainer:
         """Register model in database"""
         model_id = str(uuid.uuid4())
         
+        # Clamp metrics to fit database constraints
+        # r2_score is NUMERIC(6,4) so max is 99.9999
+        r2_clamped = max(-99.9999, min(99.9999, metrics['r2']))
+        mape_clamped = max(-99.9999, min(99.9999, metrics['mape']))
+        
+        if r2_clamped != metrics['r2']:
+            logger.warning(f"R² clamped from {metrics['r2']:.4f} to {r2_clamped:.4f} to fit database")
+        if mape_clamped != metrics['mape']:
+            logger.warning(f"MAPE clamped from {metrics['mape']:.4f} to {mape_clamped:.4f} to fit database")
+        
         query = """
             INSERT INTO ml_models (
                 id, name, model_type, algorithm, version, is_active,
@@ -589,8 +605,8 @@ class ModelTrainer:
         
         self.cur.execute(query, (
             model_id, name, model_type, algorithm, version, True,
-            model_path, metrics['mae'], metrics['rmse'], metrics['r2'],
-            metrics['mape'], metrics['median_ae'], metrics['percentile_90_error'],
+            model_path, metrics['mae'], metrics['rmse'], r2_clamped,
+            mape_clamped, metrics['median_ae'], metrics['percentile_90_error'],
             metrics.get('training_time', 0), json.dumps(hyperparameters),
             json.dumps(feature_importance)
         ))
