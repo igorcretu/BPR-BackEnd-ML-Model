@@ -677,7 +677,7 @@ class ModelTrainer:
             # Get the most recent training run ID
             self.cur.execute("""
                 SELECT id FROM model_training_runs 
-                ORDER BY started_at DESC LIMIT 1
+                ORDER BY created_at DESC LIMIT 1
             """)
             latest_run = self.cur.fetchone()
             training_run_id = latest_run[0] if latest_run else None
@@ -727,7 +727,7 @@ class ModelTrainer:
             self.cur.execute("""
                 SELECT id FROM model_training_runs 
                 WHERE status IN ('pending', 'running')
-                ORDER BY started_at DESC LIMIT 1
+                ORDER BY created_at DESC LIMIT 1
             """)
             pending_run = self.cur.fetchone()
             
