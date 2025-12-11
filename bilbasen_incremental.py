@@ -113,20 +113,32 @@ DANISH_TO_ENGLISH = {
 
 def setup_logging() -> logging.Logger:
     os.makedirs(CONFIG['LOG_DIR'], exist_ok=True)
-    log_file = os.path.join(CONFIG['LOG_DIR'], f"incremental_{datetime.now().strftime('%Y%m%d')}.log")
     
-    formatter = logging.Formatter('%(asctime)s | %(message)s', datefmt='%H:%M:%S')
+    # Create timestamped log file for this run
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = os.path.join(CONFIG['LOG_DIR'], f"scraper_{timestamp}.log")
     
+    # Detailed formatter with timestamp
+    formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    
+    # File handler - keeps everything
     file_handler = logging.FileHandler(log_file, encoding='utf-8')
     file_handler.setFormatter(formatter)
+    file_handler.setLevel(logging.DEBUG)
     
+    # Console handler - only important messages
     console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
+    console_formatter = logging.Formatter('%(asctime)s | %(message)s', datefmt='%H:%M:%S')
+    console_handler.setFormatter(console_formatter)
+    console_handler.setLevel(logging.INFO)
     
     logger = logging.getLogger('incremental_scraper')
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
+    
+    # Log the file location
+    logger.info(f"Full logs being written to: {log_file}")
     
     return logger
 
@@ -408,9 +420,29 @@ class IncrementalScraper:
     
     def update_scraping_log(self, cars_scraped: int, cars_new: int, cars_updated: int, images_downloaded: int):
         """Update the most recent ScrapingLog entry with final statistics"""
+        self.logger.info("=" * 60)
+        self.logger.info("UPDATING SCRAPING LOG IN DATABASE")
+        self.logger.info(f"Cars scraped: {cars_scraped}")
+        self.logger.info(f"Cars new: {cars_new}")
+        self.logger.info(f"Cars updated: {cars_updated}")
+        self.logger.info(f"Images downloaded: {images_downloaded}")
+        
         try:
             conn = self.get_db_connection()
             cur = conn.cursor()
+            
+            # First, check what logs exist
+            cur.execute("""
+                SELECT id, source_name, success, completed_at, started_at 
+                FROM scraping_logs 
+                WHERE source_name = 'bilbasen' 
+                ORDER BY started_at DESC 
+                LIMIT 3
+            """)
+            existing_logs = cur.fetchall()
+            self.logger.debug(f"Found {len(existing_logs)} recent scraping logs:")
+            for log in existing_logs:
+                self.logger.debug(f"  ID: {log[0]}, Success: {log[2]}, Completed: {log[3]}, Started: {log[4]}")
             
             # Update the most recent log entry for bilbasen that's marked as success but not completed
             cur.execute("""
@@ -425,21 +457,25 @@ class IncrementalScraper:
                   AND completed_at IS NULL
                 ORDER BY started_at DESC
                 LIMIT 1
-                RETURNING id
+                RETURNING id, cars_scraped, cars_new, images_downloaded
             """, (cars_scraped, cars_new, cars_updated, images_downloaded))
             
             result = cur.fetchone()
             conn.commit()
-            cur.close()
-            conn.close()
             
             if result:
-                self.logger.info(f"Updated ScrapingLog ID: {result[0]} with final statistics")
+                self.logger.info(f"✅ Successfully updated ScrapingLog ID: {result[0]}")
+                self.logger.info(f"   Final stats: {result[1]} scraped, {result[2]} new, {result[3]} images")
             else:
-                self.logger.warning("No ScrapingLog entry found to update")
+                self.logger.warning("⚠️  No ScrapingLog entry found to update (no incomplete success=TRUE logs)")
+            
+            cur.close()
+            conn.close()
+            self.logger.info("=" * 60)
                 
         except Exception as e:
-            self.logger.error(f"Failed to update ScrapingLog: {e}")
+            self.logger.error(f"❌ Failed to update ScrapingLog: {type(e).__name__}: {e}")
+            self.logger.error("=" * 60)
     
     def fetch_page(self, url: str, use_cookies: bool = False) -> Optional[str]:
         """Fetch a page - create new session per request for thread safety"""
