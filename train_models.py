@@ -1536,10 +1536,19 @@ class ModelTrainer:
         if mape_clamped != metrics['mape']:
             logger.warning(f"MAPE clamped from {metrics['mape']:.4f} to {mape_clamped:.4f}")
         
+        # Store absolute path on Pi (will be converted in container)
+        abs_model_path = os.path.abspath(model_path)
+        
+        logger.info(f"📝 Registering model in database:")
+        logger.info(f"   Name: {name} v{version}")
+        logger.info(f"   Type: {model_type} ({algorithm})")
+        logger.info(f"   Path: {abs_model_path}")
+        logger.info(f"   R²: {r2_clamped:.4f}, MAE: {metrics['mae']:.0f} DKK")
+        
         query = """
             INSERT INTO ml_models (
                 id, name, model_type, algorithm, version, is_active,
-                model_file_path, mae, rmse, r2_score, mape, median_ae,
+                model_path, mae, rmse, r2_score, mape, median_ae,
                 percentile_90_error, training_time_seconds, hyperparameters,
                 feature_importances, created_at, updated_at
             ) VALUES (
@@ -1547,7 +1556,7 @@ class ModelTrainer:
             )
             ON CONFLICT (name) DO UPDATE SET
                 version = EXCLUDED.version,
-                model_file_path = EXCLUDED.model_file_path,
+                model_path = EXCLUDED.model_path,
                 mae = EXCLUDED.mae,
                 rmse = EXCLUDED.rmse,
                 r2_score = EXCLUDED.r2_score,
@@ -1557,13 +1566,14 @@ class ModelTrainer:
                 training_time_seconds = EXCLUDED.training_time_seconds,
                 hyperparameters = EXCLUDED.hyperparameters,
                 feature_importances = EXCLUDED.feature_importances,
+                is_active = EXCLUDED.is_active,
                 updated_at = NOW()
             RETURNING id
         """
         
         self.cur.execute(query, (
             model_id, name, model_type, algorithm, version, True,
-            model_path, metrics['mae'], metrics['rmse'], r2_clamped,
+            abs_model_path, metrics['mae'], metrics['rmse'], r2_clamped,
             mape_clamped, metrics['median_ae'], metrics['percentile_90_error'],
             metrics.get('training_time', 0), json.dumps(hyperparameters),
             json.dumps(feature_importance)
@@ -1572,13 +1582,23 @@ class ModelTrainer:
         result = self.cur.fetchone()
         if result:
             model_id = result[0]
+            logger.info(f"✅ Model registered successfully (ID: {model_id})")
+        else:
+            logger.warning(f"⚠️ Model registration returned no ID")
         
         self.conn.commit()
-        self.models_trained.append({'id': model_id, 'name': name, 'r2': metrics['r2']})
+        self.models_trained.append({
+            'id': model_id, 
+            'name': name, 
+            'r2': metrics['r2'],
+            'version': version,
+            'path': abs_model_path
+        })
         
         if metrics['r2'] > self.best_r2:
             self.best_r2 = metrics['r2']
             self.best_model_id = model_id
+            logger.info(f"🏆 New best model: {name} (R²={metrics['r2']:.4f})")
         
         return model_id
     
@@ -1676,13 +1696,18 @@ class ModelTrainer:
             test_size = len(self.X_test) if self.X_test is not None else 0
             duration = time.time() - self.start_time if self.start_time else 0
             
-            logger.info(f"Dataset size: {dataset_size}")
-            logger.info(f"Train size: {train_size}")
-            logger.info(f"Test size: {test_size}")
-            logger.info(f"Duration: {duration:.2f}s")
-            logger.info(f"Status: {status}")
-            logger.info(f"Models trained: {[m['name'] for m in self.models_trained]}")
-            logger.info(f"Best model ID: {self.best_model_id}")
+            logger.info(f"📊 Dataset size: {dataset_size:,}")
+            logger.info(f"📊 Train size: {train_size:,}")
+            logger.info(f"📊 Test size: {test_size:,}")
+            logger.info(f"⏱️  Duration: {duration:.2f}s ({duration/60:.1f} min)")
+            logger.info(f"📋 Status: {status}")
+            logger.info(f"🤖 Models trained: {len(self.models_trained)}")
+            for m in self.models_trained:
+                logger.info(f"   - {m['name']} v{m['version']}: R²={m['r2']:.4f}")
+            if self.best_model_id:
+                best = next((m for m in self.models_trained if m['id'] == self.best_model_id), None)
+                if best:
+                    logger.info(f"🏆 Best model: {best['name']} (R²={best['r2']:.4f})")
             
             # Check for pending run
             self.cur.execute("""
