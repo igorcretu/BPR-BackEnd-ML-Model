@@ -825,6 +825,17 @@ class IncrementalScraper:
             image_filename = row.get('image_filename')
             image_path = f"images/{image_filename}" if image_filename else None
             
+            # Parse listing_date from website (ISO format: 2024-12-10T15:30:00Z)
+            listing_date = None
+            listing_date_str = row.get('listing_date', '')
+            if listing_date_str:
+                try:
+                    # Parse ISO format and convert to datetime
+                    from dateutil import parser as date_parser
+                    listing_date = date_parser.parse(listing_date_str)
+                except:
+                    pass
+            
             return {
                 'external_id': external_id or url,
                 'url': url,
@@ -883,6 +894,7 @@ class IncrementalScraper:
                 'source_url': url,
                 'location': location,
                 'dealer_name': safe_value(row.get('seller_name')),
+                'listing_date': listing_date,
                 'image_url': row.get('image_url', '')
             }
         except Exception as e:
@@ -979,7 +991,7 @@ class IncrementalScraper:
                     home_charging_ac, fast_charging_dc, charging_time_dc,
                     fuel_consumption, co2_emission, euro_norm, tank_capacity,
                     periodic_tax, image_path, image_downloaded,
-                    source_url, location, dealer_name
+                    source_url, location, dealer_name, listing_date
                 ) VALUES (
                     %(external_id)s, %(url)s, %(brand)s, %(model)s, %(variant)s,
                     %(title)s, %(description)s, %(price)s, %(new_price)s,
@@ -995,7 +1007,7 @@ class IncrementalScraper:
                     %(home_charging_ac)s, %(fast_charging_dc)s, %(charging_time_dc)s,
                     %(fuel_consumption)s, %(co2_emission)s, %(euro_norm)s, %(tank_capacity)s,
                     %(periodic_tax)s, %(image_path)s, %(image_downloaded)s,
-                    %(source_url)s, %(location)s, %(dealer_name)s
+                    %(source_url)s, %(location)s, %(dealer_name)s, %(listing_date)s
                 )
             """, insert_data)
             
