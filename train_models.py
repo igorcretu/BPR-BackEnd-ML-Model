@@ -120,7 +120,6 @@ class ModelTrainer:
         self.label_encoders = {}
         
         # Training run info
-        self.training_run_id = str(uuid.uuid4())
         self.start_time = None
         self.models_trained = []
         self.best_model_id = None
@@ -661,8 +660,20 @@ class ModelTrainer:
                 )
             """
             
+            # Get the most recent training run ID
+            self.cur.execute("""
+                SELECT id FROM model_training_runs 
+                ORDER BY started_at DESC LIMIT 1
+            """)
+            latest_run = self.cur.fetchone()
+            training_run_id = latest_run[0] if latest_run else None
+            
+            if not training_run_id:
+                logger.warning("⚠️  No training run found - skipping comparison metrics")
+                return
+            
             self.cur.execute(query, (
-                str(uuid.uuid4()), model_id, self.training_run_id,
+                str(uuid.uuid4()), model_id, training_run_id,
                 overall_mae, overall_rmse, overall_r2, overall_mape,
                 overall_mae, overall_mae, overall_mae, overall_mae,  # Placeholder for price ranges
                 overall_mae, overall_mae, overall_mae, overall_mae,  # Placeholder for fuel types
@@ -681,7 +692,7 @@ class ModelTrainer:
                 logger.debug("Transaction rolled back")
     
     def log_training_run(self, dataset_size, status='completed'):
-        """Log training run to database"""
+        """Log training run to database - updates the pending entry created by API"""
         logger.info("=" * 60)
         logger.info("LOGGING TRAINING RUN TO DATABASE")
         
@@ -690,7 +701,6 @@ class ModelTrainer:
             test_size = len(self.X_test) if self.X_test is not None else 0
             duration = time.time() - self.start_time if self.start_time else 0
             
-            logger.info(f"Training Run ID: {self.training_run_id}")
             logger.info(f"Dataset size: {dataset_size}")
             logger.info(f"Train size: {train_size}")
             logger.info(f"Test size: {test_size}")
@@ -699,21 +709,54 @@ class ModelTrainer:
             logger.info(f"Models trained: {[m['name'] for m in self.models_trained]}")
             logger.info(f"Best model ID: {self.best_model_id}")
             
-            query = """
-                INSERT INTO model_training_runs (
-                    id, run_date, dataset_size, train_size, test_size,
-                    training_duration_seconds, status, models_trained,
-                    best_model_id, created_at
-                ) VALUES (
-                    %s, NOW(), %s, %s, %s, %s, %s, %s, %s, NOW()
-                )
-            """
+            # First, find the most recent pending entry
+            self.cur.execute("""
+                SELECT id FROM model_training_runs 
+                WHERE status IN ('pending', 'running')
+                ORDER BY started_at DESC LIMIT 1
+            """)
+            pending_run = self.cur.fetchone()
             
-            self.cur.execute(query, (
-                self.training_run_id, dataset_size, train_size, test_size,
-                duration, status, json.dumps([m['name'] for m in self.models_trained]),
-                self.best_model_id
-            ))
+            if pending_run:
+                # Update the existing pending entry
+                logger.info(f"Updating existing training run: {pending_run[0]}")
+                query = """
+                    UPDATE model_training_runs 
+                    SET run_date = NOW(),
+                        dataset_size = %s,
+                        train_size = %s,
+                        test_size = %s,
+                        training_duration_seconds = %s,
+                        status = %s,
+                        models_trained = %s,
+                        best_model_id = %s,
+                        completed_at = NOW()
+                    WHERE id = %s
+                """
+                
+                self.cur.execute(query, (
+                    dataset_size, train_size, test_size,
+                    duration, status, json.dumps([m['name'] for m in self.models_trained]),
+                    self.best_model_id, pending_run[0]
+                ))
+            else:
+                # No pending entry found, create a new one
+                logger.warning("⚠️  No pending training run found - creating new entry")
+                query = """
+                    INSERT INTO model_training_runs (
+                        run_date, dataset_size, train_size, test_size,
+                        training_duration_seconds, status, models_trained,
+                        best_model_id, created_at
+                    ) VALUES (
+                        NOW(), %s, %s, %s, %s, %s, %s, %s, NOW()
+                    )
+                """
+                
+                self.cur.execute(query, (
+                    dataset_size, train_size, test_size,
+                    duration, status, json.dumps([m['name'] for m in self.models_trained]),
+                    self.best_model_id
+                ))
             
             self.conn.commit()
             logger.info(f"✅ Successfully logged training run to database")
@@ -730,7 +773,6 @@ class ModelTrainer:
         self.start_time = time.time()
         logger.info("=" * 60)
         logger.info("🚀 STARTING MULTI-MODEL TRAINING")
-        logger.info(f"Training Run ID: {self.training_run_id}")
         logger.info(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 60)
         
