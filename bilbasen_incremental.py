@@ -444,7 +444,30 @@ class IncrementalScraper:
             for log in existing_logs:
                 self.logger.debug(f"  ID: {log[0]}, Success: {log[2]}, Completed: {log[3]}, Started: {log[4]}")
             
-            # Update the most recent log entry for bilbasen that's marked as success but not completed
+            # Find the most recent incomplete log entry
+            cur.execute("""
+                SELECT id 
+                FROM scraping_logs 
+                WHERE source_name = 'bilbasen' 
+                  AND success = TRUE 
+                  AND completed_at IS NULL
+                ORDER BY started_at DESC
+                LIMIT 1
+            """)
+            
+            log_to_update = cur.fetchone()
+            
+            if not log_to_update:
+                self.logger.warning("⚠️  No ScrapingLog entry found to update (no incomplete success=TRUE logs)")
+                cur.close()
+                conn.close()
+                self.logger.info("=" * 60)
+                return
+            
+            log_id = log_to_update[0]
+            self.logger.debug(f"Found log to update: {log_id}")
+            
+            # Update the found log entry
             cur.execute("""
                 UPDATE scraping_logs 
                 SET cars_scraped = %s,
@@ -452,13 +475,9 @@ class IncrementalScraper:
                     cars_updated = %s,
                     images_downloaded = %s,
                     completed_at = NOW()
-                WHERE source_name = 'bilbasen' 
-                  AND success = TRUE 
-                  AND completed_at IS NULL
-                ORDER BY started_at DESC
-                LIMIT 1
+                WHERE id = %s
                 RETURNING id, cars_scraped, cars_new, images_downloaded
-            """, (cars_scraped, cars_new, cars_updated, images_downloaded))
+            """, (cars_scraped, cars_new, cars_updated, images_downloaded, log_id))
             
             result = cur.fetchone()
             conn.commit()
@@ -467,7 +486,7 @@ class IncrementalScraper:
                 self.logger.info(f"✅ Successfully updated ScrapingLog ID: {result[0]}")
                 self.logger.info(f"   Final stats: {result[1]} scraped, {result[2]} new, {result[3]} images")
             else:
-                self.logger.warning("⚠️  No ScrapingLog entry found to update (no incomplete success=TRUE logs)")
+                self.logger.error("❌ Update returned no result - this should not happen!")
             
             cur.close()
             conn.close()
