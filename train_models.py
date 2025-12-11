@@ -705,6 +705,24 @@ class ModelTrainer:
                 self.conn.rollback()
                 logger.debug("Transaction rolled back")
     
+    def update_training_progress(self, models_completed, total_models):
+        """Update training progress in database for frontend polling"""
+        try:
+            # Update the running training entry with progress info
+            progress_info = f"{models_completed}/{total_models} models completed"
+            self.cur.execute("""
+                UPDATE model_training_runs 
+                SET notes = %s
+                WHERE status = 'running'
+                ORDER BY created_at DESC LIMIT 1
+            """, (progress_info,))
+            self.conn.commit()
+            logger.debug(f"✅ Updated training progress: {progress_info}")
+        except Exception as e:
+            logger.debug(f"⚠️  Could not update training progress: {e}")
+            if self.conn:
+                self.conn.rollback()
+    
     def log_training_run(self, dataset_size, status='completed'):
         """Log training run to database - updates the pending entry created by API"""
         logger.info("=" * 60)
@@ -795,6 +813,21 @@ class ModelTrainer:
             return False
         
         try:
+            # Update pending training run to 'running' status
+            try:
+                self.cur.execute("""
+                    UPDATE model_training_runs 
+                    SET status = 'running'
+                    WHERE status = 'pending'
+                    ORDER BY created_at DESC LIMIT 1
+                """)
+                self.conn.commit()
+                logger.info("✅ Updated training status to 'running'")
+            except Exception as e:
+                logger.warning(f"⚠️  Could not update training status: {e}")
+                if self.conn:
+                    self.conn.rollback()
+            
             # Load data
             logger.info("📥 Loading training data...")
             dataset_size = self.load_data()
@@ -834,6 +867,9 @@ class ModelTrainer:
                     model_duration = time.time() - model_start
                     results[model_name] = {'id': model_id, 'metrics': metrics}
                     logger.info(f"✅ {model_name.upper()} completed in {model_duration:.2f}s - R²: {metrics['r2']:.4f}, MAE: {metrics['mae']:.2f}")
+                    
+                    # Update progress in database for frontend
+                    self.update_training_progress(len(results), len(models_to_train))
                     logger.info("")
                     
                 except Exception as e:
