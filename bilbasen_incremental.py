@@ -406,6 +406,41 @@ class IncrementalScraper:
             self.logger.error(f"Database error: {e}")
             return set()
     
+    def update_scraping_log(self, cars_scraped: int, cars_new: int, cars_updated: int, images_downloaded: int):
+        """Update the most recent ScrapingLog entry with final statistics"""
+        try:
+            conn = self.get_db_connection()
+            cur = conn.cursor()
+            
+            # Update the most recent log entry for bilbasen that's marked as success but not completed
+            cur.execute("""
+                UPDATE scraping_logs 
+                SET cars_scraped = %s,
+                    cars_new = %s,
+                    cars_updated = %s,
+                    images_downloaded = %s,
+                    completed_at = NOW()
+                WHERE source_name = 'bilbasen' 
+                  AND success = TRUE 
+                  AND completed_at IS NULL
+                ORDER BY started_at DESC
+                LIMIT 1
+                RETURNING id
+            """, (cars_scraped, cars_new, cars_updated, images_downloaded))
+            
+            result = cur.fetchone()
+            conn.commit()
+            cur.close()
+            conn.close()
+            
+            if result:
+                self.logger.info(f"Updated ScrapingLog ID: {result[0]} with final statistics")
+            else:
+                self.logger.warning("No ScrapingLog entry found to update")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to update ScrapingLog: {e}")
+    
     def fetch_page(self, url: str, use_cookies: bool = False) -> Optional[str]:
         """Fetch a page - create new session per request for thread safety"""
         session = requests.Session()
@@ -1004,6 +1039,15 @@ class IncrementalScraper:
         if duration > 0:
             self.logger.info(f"Speed: {len(new_listings)/duration:.1f} listings/sec")
         self.logger.info("=" * 60)
+        
+        # Update ScrapingLog in database with final statistics
+        if not self.dry_run:
+            self.update_scraping_log(
+                cars_scraped=len(new_listings),
+                cars_new=self.stats.new_count,
+                cars_updated=0,  # Incremental scraper only adds new cars
+                images_downloaded=self.stats.image_downloaded
+            )
         
         return {
             'new_count': self.stats.new_count,
