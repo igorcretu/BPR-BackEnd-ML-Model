@@ -629,31 +629,40 @@ class ModelTrainer:
         # Note: In production, you'd need to pass the full test DataFrame with price/fuel/year
         # For now, use overall metrics as placeholder
         
-        query = """
-            INSERT INTO model_comparison_metrics (
-                id, model_id, training_run_id,
+        try:
+            query = """
+                INSERT INTO model_comparison_metrics (
+                    id, model_id, training_run_id,
+                    overall_mae, overall_rmse, overall_r2, overall_mape,
+                    mae_under_100k, mae_100k_300k, mae_300k_500k, mae_over_500k,
+                    mae_petrol, mae_diesel, mae_electric, mae_hybrid,
+                    mae_pre_2010, mae_2010_2015, mae_2015_2020, mae_post_2020,
+                    avg_inference_time_ms, confidence_calibration_score,
+                    created_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, NOW()
+                )
+            """
+            
+            self.cur.execute(query, (
+                str(uuid.uuid4()), model_id, self.training_run_id,
                 overall_mae, overall_rmse, overall_r2, overall_mape,
-                mae_under_100k, mae_100k_300k, mae_300k_500k, mae_over_500k,
-                mae_petrol, mae_diesel, mae_electric, mae_hybrid,
-                mae_pre_2010, mae_2010_2015, mae_2015_2020, mae_post_2020,
-                avg_inference_time_ms, confidence_calibration_score,
-                created_at
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, NOW()
-            )
-        """
-        
-        self.cur.execute(query, (
-            str(uuid.uuid4()), model_id, self.training_run_id,
-            overall_mae, overall_rmse, overall_r2, overall_mape,
-            overall_mae, overall_mae, overall_mae, overall_mae,  # Placeholder for price ranges
-            overall_mae, overall_mae, overall_mae, overall_mae,  # Placeholder for fuel types
-            overall_mae, overall_mae, overall_mae, overall_mae,  # Placeholder for year ranges
-            avg_inference_time, confidence_calibration
-        ))
-        
-        self.conn.commit()
+                overall_mae, overall_mae, overall_mae, overall_mae,  # Placeholder for price ranges
+                overall_mae, overall_mae, overall_mae, overall_mae,  # Placeholder for fuel types
+                overall_mae, overall_mae, overall_mae, overall_mae,  # Placeholder for year ranges
+                avg_inference_time, confidence_calibration
+            ))
+            
+            self.conn.commit()
+            logger.debug("✅ Comparison metrics stored successfully")
+        except Exception as e:
+            logger.warning(f"⚠️  Could not store comparison metrics: {type(e).__name__}: {e}")
+            logger.warning("This is non-critical - model training will continue")
+            # Rollback the failed transaction
+            if self.conn:
+                self.conn.rollback()
+                logger.debug("Transaction rolled back")
     
     def log_training_run(self, dataset_size, status='completed'):
         """Log training run to database"""
@@ -757,6 +766,13 @@ class ModelTrainer:
                     
                 except Exception as e:
                     logger.error(f"❌ Failed to train {model_name}: {type(e).__name__}: {e}")
+                    # Rollback any failed database operations
+                    if self.conn:
+                        try:
+                            self.conn.rollback()
+                            logger.debug(f"Transaction rolled back for {model_name}")
+                        except:
+                            pass
                     logger.info("")
                     continue
             
