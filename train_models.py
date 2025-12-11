@@ -184,6 +184,7 @@ class ModelTrainer:
     def _engineer_features(self, df):
         """Feature engineering and encoding"""
         logger.info("🔧 Engineering features...")
+        logger.debug(f"Initial shape: {df.shape}")
         
         # Age
         current_year = datetime.now().year
@@ -194,11 +195,28 @@ class ModelTrainer:
                          'Volvo', 'Polestar', 'Lexus', 'Land Rover', 'Jaguar']
         df['is_premium'] = df['brand'].isin(premium_brands).astype(int)
         
-        # Mileage per year
+        # Mileage per year (avoid division by zero)
         df['mileage_per_year'] = df['mileage'] / (df['age'] + 1)
         
+        # Clean numeric columns - replace inf and extremely large values
+        logger.info("🧹 Cleaning numeric data...")
+        numeric_cols_to_clean = ['mileage', 'horsepower', 'age', 'mileage_per_year', 'year']
+        
+        for col in numeric_cols_to_clean:
+            if col in df.columns:
+                # Replace infinity with NaN
+                df[col] = df[col].replace([np.inf, -np.inf], np.nan)
+                
+                # Check for extremely large values (> 1e10)
+                extreme_mask = df[col].abs() > 1e10
+                if extreme_mask.any():
+                    logger.warning(f"Found {extreme_mask.sum()} extreme values in {col}, replacing with NaN")
+                    df.loc[extreme_mask, col] = np.nan
+        
         # Fill missing values
+        logger.debug("Filling missing values...")
         df['horsepower'] = df['horsepower'].fillna(df['horsepower'].median())
+        df['mileage_per_year'] = df['mileage_per_year'].fillna(df['mileage_per_year'].median())
         df['doors'] = df['doors'].fillna(4)
         df['fuel_type'] = df['fuel_type'].fillna('Petrol')
         df['transmission'] = df['transmission'].fillna('Manual')
@@ -207,6 +225,7 @@ class ModelTrainer:
         df['color'] = df['color'].fillna('Unknown')
         
         # Encode categorical variables
+        logger.debug("Encoding categorical variables...")
         categorical_cols = ['brand', 'model', 'fuel_type', 'transmission', 
                            'body_type', 'drive_type', 'color']
         
@@ -216,11 +235,24 @@ class ModelTrainer:
             self.label_encoders[col] = le
         
         # Scale numeric features
+        logger.debug("Scaling numeric features...")
         numeric_cols = ['year', 'mileage', 'horsepower', 'age', 'mileage_per_year']
         self.scaler = StandardScaler()
         df[numeric_cols] = self.scaler.fit_transform(df[numeric_cols])
         
+        # Final check for inf/nan after scaling
+        if np.any(np.isinf(df[numeric_cols].values)) or np.any(np.isnan(df[numeric_cols].values)):
+            logger.error("❌ Still found inf/nan values after cleaning!")
+            logger.error("Problem columns:")
+            for col in numeric_cols:
+                inf_count = np.isinf(df[col]).sum()
+                nan_count = np.isnan(df[col]).sum()
+                if inf_count > 0 or nan_count > 0:
+                    logger.error(f"  {col}: {inf_count} inf, {nan_count} nan")
+            raise ValueError("Data contains inf/nan after cleaning")
+        
         logger.info("✅ Feature engineering complete")
+        logger.debug(f"Final shape: {df.shape}")
         return df
     
     def train_xgboost(self):
