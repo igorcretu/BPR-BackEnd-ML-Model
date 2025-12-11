@@ -103,6 +103,12 @@ class BaseRNNModel:
     
     def fit(self, X, y, epochs=50, batch_size=64, lr=0.001, verbose=True):
         """Train the model"""
+        # Convert to numpy arrays if needed
+        if hasattr(X, 'values'):  # DataFrame
+            X = X.values
+        if hasattr(y, 'values'):  # Series
+            y = y.values
+        
         # Normalize target
         y_normalized = self._normalize_target(y)
         
@@ -150,6 +156,10 @@ class BaseRNNModel:
         if not self.is_fitted:
             raise ValueError("Model not fitted yet")
         
+        # Convert to numpy array if needed
+        if hasattr(X, 'values'):  # DataFrame
+            X = X.values
+        
         self.model.eval()
         with torch.no_grad():
             X_tensor = torch.FloatTensor(X).to(self.device)
@@ -177,6 +187,10 @@ class BaseRNNModel:
         """
         if not self.is_fitted:
             raise ValueError("Model not fitted yet")
+        
+        # Convert to numpy array if needed
+        if hasattr(X, 'values'):  # DataFrame
+            X = X.values
         
         # Enable dropout during inference
         self.model.train()  # Keep dropout active
