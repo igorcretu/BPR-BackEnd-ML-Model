@@ -358,11 +358,18 @@ class ModelTrainer:
         return model_id, metrics
     
     def train_ridge(self):
-        """Train Ridge Regression"""
+        """Train Ridge Regression with hyperparameter tuning"""
         logger.info("🚀 Training Ridge Regression...")
         start = time.time()
         
-        ridge = RidgeModel(alpha=1.0)
+        # Try different alpha values to find the best one
+        from sklearn.linear_model import RidgeCV
+        best_alpha = RidgeCV(alphas=[0.001, 0.01, 0.1, 1.0, 10.0, 100.0], cv=5).fit(
+            self.X_train, self.y_train
+        ).alpha_
+        logger.info(f"Best alpha for Ridge: {best_alpha}")
+        
+        ridge = RidgeModel(alpha=best_alpha)
         ridge.fit(self.X_train, self.y_train)
         y_pred, confidence = ridge.predict_with_confidence(self.X_test)
         
@@ -381,7 +388,7 @@ class ModelTrainer:
             version='1.0.0',
             model_path=model_path,
             metrics=metrics,
-            hyperparameters={'alpha': 1.0},
+            hyperparameters={'alpha': best_alpha},
             feature_importance=ridge.get_feature_importance(self.feature_names)
         )
         
@@ -391,11 +398,18 @@ class ModelTrainer:
         return model_id, metrics
     
     def train_lasso(self):
-        """Train Lasso Regression"""
+        """Train Lasso Regression with hyperparameter tuning"""
         logger.info("🚀 Training Lasso Regression...")
         start = time.time()
         
-        lasso = LassoModel(alpha=100.0)
+        # Try different alpha values to find the best one
+        from sklearn.linear_model import LassoCV
+        best_alpha = LassoCV(alphas=[0.1, 1.0, 10.0, 100.0, 1000.0], cv=5, max_iter=10000).fit(
+            self.X_train, self.y_train
+        ).alpha_
+        logger.info(f"Best alpha for Lasso: {best_alpha}")
+        
+        lasso = LassoModel(alpha=best_alpha)
         lasso.fit(self.X_train, self.y_train)
         y_pred, confidence = lasso.predict_with_confidence(self.X_test)
         
@@ -414,7 +428,7 @@ class ModelTrainer:
             version='1.0.0',
             model_path=model_path,
             metrics=metrics,
-            hyperparameters={'alpha': 100.0},
+            hyperparameters={'alpha': best_alpha},
             feature_importance=lasso.get_feature_importance(self.feature_names)
         )
         
