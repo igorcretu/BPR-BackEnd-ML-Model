@@ -55,15 +55,37 @@ from rnn_models import LSTMModel, GRUModel
 load_dotenv()
 
 # Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('train_models.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+LOG_DIR = 'logs'
+os.makedirs(LOG_DIR, exist_ok=True)
+
+def setup_logging():
+    """Setup logging with timestamped file and console output"""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = os.path.join(LOG_DIR, f'training_{timestamp}.log')
+    
+    # Detailed formatter with timestamp
+    file_formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    console_formatter = logging.Formatter('%(asctime)s | %(message)s', datefmt='%H:%M:%S')
+    
+    # File handler - keeps everything
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setFormatter(file_formatter)
+    file_handler.setLevel(logging.DEBUG)
+    
+    # Console handler - only important messages
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(console_formatter)
+    console_handler.setLevel(logging.INFO)
+    
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    logger.info(f"Full training logs being written to: {log_file}")
+    return logger
+
+logger = setup_logging()
 
 # Database config - consistent with scraper
 DB_CONFIG = {
@@ -603,10 +625,22 @@ class ModelTrainer:
     
     def log_training_run(self, dataset_size, status='completed'):
         """Log training run to database"""
+        logger.info("=" * 60)
+        logger.info("LOGGING TRAINING RUN TO DATABASE")
+        
         try:
             train_size = len(self.X_train) if self.X_train is not None else 0
             test_size = len(self.X_test) if self.X_test is not None else 0
             duration = time.time() - self.start_time if self.start_time else 0
+            
+            logger.info(f"Training Run ID: {self.training_run_id}")
+            logger.info(f"Dataset size: {dataset_size}")
+            logger.info(f"Train size: {train_size}")
+            logger.info(f"Test size: {test_size}")
+            logger.info(f"Duration: {duration:.2f}s")
+            logger.info(f"Status: {status}")
+            logger.info(f"Models trained: {[m['name'] for m in self.models_trained]}")
+            logger.info(f"Best model ID: {self.best_model_id}")
             
             query = """
                 INSERT INTO model_training_runs (
@@ -625,9 +659,11 @@ class ModelTrainer:
             ))
             
             self.conn.commit()
-            logger.info(f"✅ Training run logged: {self.training_run_id}")
+            logger.info(f"✅ Successfully logged training run to database")
+            logger.info("=" * 60)
         except Exception as e:
-            logger.error(f"❌ Failed to log training run: {e}")
+            logger.error(f"❌ Failed to log training run: {type(e).__name__}: {e}")
+            logger.error("=" * 60)
             # Don't fail the entire training just because logging failed
             if self.conn:
                 self.conn.rollback()
@@ -635,22 +671,35 @@ class ModelTrainer:
     def run(self, models_to_train=None):
         """Main training orchestration"""
         self.start_time = time.time()
-        logger.info("🚀 Starting multi-model training...")
+        logger.info("=" * 60)
+        logger.info("🚀 STARTING MULTI-MODEL TRAINING")
+        logger.info(f"Training Run ID: {self.training_run_id}")
+        logger.info(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info("=" * 60)
         
         if not self.connect_db():
+            logger.error("❌ Database connection failed - aborting training")
             return False
         
         try:
             # Load data
+            logger.info("📥 Loading training data...")
             dataset_size = self.load_data()
+            logger.info(f"✅ Loaded {dataset_size} records from database")
             
             # Train models
             if models_to_train is None:
                 models_to_train = ['xgboost', 'catboost', 'ridge', 'lasso', 'elasticnet', 'lstm', 'gru']
             
+            logger.info(f"🤖 Training {len(models_to_train)} models: {', '.join(models_to_train)}")
+            logger.info("")
+            
             results = {}
-            for model_name in models_to_train:
+            for i, model_name in enumerate(models_to_train, 1):
                 try:
+                    logger.info(f"[{i}/{len(models_to_train)}] Training {model_name.upper()}...")
+                    model_start = time.time()
+                    
                     if model_name == 'xgboost':
                         model_id, metrics = self.train_xgboost()
                     elif model_name == 'catboost':
@@ -666,40 +715,55 @@ class ModelTrainer:
                     elif model_name == 'gru':
                         model_id, metrics = self.train_gru()
                     else:
-                        logger.warning(f"Unknown model: {model_name}")
+                        logger.warning(f"⚠️  Unknown model: {model_name}")
                         continue
                     
+                    model_duration = time.time() - model_start
                     results[model_name] = {'id': model_id, 'metrics': metrics}
+                    logger.info(f"✅ {model_name.upper()} completed in {model_duration:.2f}s - R²: {metrics['r2']:.4f}, MAE: {metrics['mae']:.2f}")
+                    logger.info("")
                     
                 except Exception as e:
-                    logger.error(f"❌ Failed to train {model_name}: {e}")
+                    logger.error(f"❌ Failed to train {model_name}: {type(e).__name__}: {e}")
+                    logger.info("")
                     continue
             
-            # Log training run
-            self.log_training_run(dataset_size, status='completed')
-            
             # Print summary
-            logger.info(f"\n{'='*60}")
-            logger.info("📊 Training Summary")
-            logger.info(f"{'='*60}")
-            logger.info(f"Models trained: {len(results)}")
-            logger.info(f"Best model: {self.best_model_id} (R²={self.best_r2:.4f})")
-            logger.info(f"Duration: {time.time() - self.start_time:.2f}s")
-            logger.info(f"{'='*60}\n")
+            logger.info("=" * 60)
+            logger.info("📊 TRAINING SUMMARY")
+            logger.info("=" * 60)
+            logger.info(f"Total models trained: {len(results)}/{len(models_to_train)}")
+            logger.info(f"Best model: {self.best_model_id}")
+            logger.info(f"Best R² score: {self.best_r2:.4f}")
+            logger.info(f"Total duration: {time.time() - self.start_time:.2f}s")
+            logger.info("")
+            logger.info("Individual model results:")
             
             for model_name, data in results.items():
                 metrics = data['metrics']
-                logger.info(f"{model_name.upper()}: R²={metrics['r2']:.4f}, MAE={metrics['mae']:.2f}")
+                logger.info(f"  {model_name.upper():12} → R²: {metrics['r2']:.4f}, MAE: {metrics['mae']:7.2f}, RMSE: {metrics['rmse']:7.2f}")
+            logger.info("=" * 60)
             
+            # Log training run to database
+            self.log_training_run(dataset_size, status='completed')
+            
+            logger.info("✅ Training completed successfully!")
+            logger.info("")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Training failed: {e}")
+            logger.error("=" * 60)
+            logger.error(f"❌ TRAINING FAILED: {type(e).__name__}")
+            logger.error(f"Error: {e}")
+            logger.error("=" * 60)
             self.log_training_run(0, status='failed')
             return False
         
         finally:
+            logger.info("🧹 Cleaning up...")
             self.cleanup()
+            logger.info("Training session ended")
+            logger.info("")
     
     def cleanup(self):
         """Cleanup database connections"""
