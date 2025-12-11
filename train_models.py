@@ -639,38 +639,35 @@ class ModelTrainer:
         return model_id
     
     def _store_comparison_metrics(self, model_id, y_true, y_pred, confidence):
-        """Store detailed comparison metrics segmented by price, fuel, year"""
-        # Overall metrics
-        overall_mae = mean_absolute_error(y_true, y_pred)
-        overall_rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-        overall_r2 = r2_score(y_true, y_pred)
-        overall_mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+        """Store comparison metrics matching actual database schema"""
+        # Calculate metrics
+        mae = mean_absolute_error(y_true, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+        r2 = r2_score(y_true, y_pred)
+        mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
         
-        # Inference time (measure prediction time)
-        start = time.time()
-        _ = y_pred  # Already predicted
-        avg_inference_time = (time.time() - start) / len(y_pred) * 1000  # ms per prediction
+        # Additional metrics
+        median_ae = np.median(np.abs(y_true - y_pred))
+        percentile_90_error = np.percentile(np.abs(y_true - y_pred), 90)
         
-        # Confidence calibration (simplified)
-        confidence_calibration = 1.0 - np.abs(np.mean(confidence) - 70) / 100
+        # Clamp values to fit database constraints
+        r2_clamped = max(-99.9999, min(99.9999, r2))
+        mape_clamped = max(-99.9999, min(99.9999, mape))
         
-        # Segmented metrics (using test data indices)
-        # Note: In production, you'd need to pass the full test DataFrame with price/fuel/year
-        # For now, use overall metrics as placeholder
+        if r2_clamped != r2:
+            logger.warning(f"R² clamped from {r2:.4f} to {r2_clamped:.4f} for comparison metrics")
+        if mape_clamped != mape:
+            logger.warning(f"MAPE clamped from {mape:.4f} to {mape_clamped:.4f} for comparison metrics")
         
         try:
             query = """
                 INSERT INTO model_comparison_metrics (
                     id, model_id, training_run_id,
-                    overall_mae, overall_rmse, overall_r2, overall_mape,
-                    mae_under_100k, mae_100k_300k, mae_300k_500k, mae_over_500k,
-                    mae_petrol, mae_diesel, mae_electric, mae_hybrid,
-                    mae_pre_2010, mae_2010_2015, mae_2015_2020, mae_post_2020,
-                    avg_inference_time_ms, confidence_calibration_score,
-                    created_at
+                    mae, rmse, r2_score, mape,
+                    median_ae, percentile_90_error,
+                    mae_under_100k, mae_100k_to_300k, mae_300k_to_500k, mae_over_500k
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, NOW()
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
             """
             
@@ -688,11 +685,9 @@ class ModelTrainer:
             
             self.cur.execute(query, (
                 str(uuid.uuid4()), model_id, training_run_id,
-                overall_mae, overall_rmse, overall_r2, overall_mape,
-                overall_mae, overall_mae, overall_mae, overall_mae,  # Placeholder for price ranges
-                overall_mae, overall_mae, overall_mae, overall_mae,  # Placeholder for fuel types
-                overall_mae, overall_mae, overall_mae, overall_mae,  # Placeholder for year ranges
-                avg_inference_time, confidence_calibration
+                mae, rmse, r2_clamped, mape_clamped,
+                median_ae, percentile_90_error,
+                mae, mae, mae, mae  # Placeholder for price range segmentation
             ))
             
             self.conn.commit()
