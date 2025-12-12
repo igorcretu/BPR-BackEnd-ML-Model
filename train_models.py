@@ -117,8 +117,8 @@ CONFIG = {
     },
     
     # Model directories
-    'MODEL_DIR': 'models',
-    'LOG_DIR': 'logs',
+    'MODEL_DIR': os.path.abspath('models'),
+    'LOG_DIR': os.path.abspath('logs'),
 }
 
 # Database config
@@ -133,6 +133,9 @@ DB_CONFIG = {
 # Create directories
 os.makedirs(CONFIG['MODEL_DIR'], exist_ok=True)
 os.makedirs(CONFIG['LOG_DIR'], exist_ok=True)
+
+print(f"📁 Model directory: {CONFIG['MODEL_DIR']}")
+print(f"📁 Log directory: {CONFIG['LOG_DIR']}")
 
 # ============================================================================
 # LOGGING SETUP
@@ -712,6 +715,7 @@ class ModelTrainer:
         # Save model with preprocessing objects
         model_filename = f'xgboost_v3_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pkl'
         model_path = os.path.join(CONFIG['MODEL_DIR'], model_filename)
+        logger.info(f"📍 Absolute model path: {os.path.abspath(model_path)}")
         self._save_model_package(model, model_path, params)
         
         model_id = self._register_model(
@@ -1288,6 +1292,7 @@ class ModelTrainer:
         model_filename = f'lstm_v3_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pt'
         model_path = os.path.join(CONFIG['MODEL_DIR'], model_filename)
         
+        logger.info(f"💾 Saving LSTM model to: {model_path}")
         torch.save({
             'model_state_dict': model.state_dict(),
             'y_mean': y_mean,
@@ -1295,6 +1300,23 @@ class ModelTrainer:
             'params': params,
             'input_dim': self.X_train.shape[1]
         }, model_path)
+        
+        # Also save preprocessing objects for prediction
+        preprocessing_path = model_path.rsplit('.', 1)[0] + '_preprocessing.pkl'
+        logger.info(f"💾 Saving preprocessing objects to: {preprocessing_path}")
+        joblib.dump({
+            'scaler': self.scaler,
+            'target_encoders': self.target_encoders,
+            'category_mappings': self.category_mappings,
+            'numeric_medians': self.numeric_medians,
+            'feature_names': self.feature_names
+        }, preprocessing_path)
+        
+        if os.path.exists(model_path):
+            file_size = os.path.getsize(model_path) / (1024 * 1024)
+            logger.info(f"✅ LSTM model saved successfully ({file_size:.2f} MB)")
+        else:
+            logger.error(f"❌ LSTM model file was not created at {model_path}")
         
         model_id = self._register_model(
             name='LSTM',
@@ -1411,6 +1433,7 @@ class ModelTrainer:
         model_filename = f'gru_v3_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pt'
         model_path = os.path.join(CONFIG['MODEL_DIR'], model_filename)
         
+        logger.info(f"💾 Saving GRU model to: {model_path}")
         torch.save({
             'model_state_dict': model.state_dict(),
             'y_mean': y_mean,
@@ -1418,6 +1441,23 @@ class ModelTrainer:
             'params': params,
             'input_dim': self.X_train.shape[1]
         }, model_path)
+        
+        # Also save preprocessing objects for prediction
+        preprocessing_path = model_path.rsplit('.', 1)[0] + '_preprocessing.pkl'
+        logger.info(f"💾 Saving preprocessing objects to: {preprocessing_path}")
+        joblib.dump({
+            'scaler': self.scaler,
+            'target_encoders': self.target_encoders,
+            'category_mappings': self.category_mappings,
+            'numeric_medians': self.numeric_medians,
+            'feature_names': self.feature_names
+        }, preprocessing_path)
+        
+        if os.path.exists(model_path):
+            file_size = os.path.getsize(model_path) / (1024 * 1024)
+            logger.info(f"✅ GRU model saved successfully ({file_size:.2f} MB)")
+        else:
+            logger.error(f"❌ GRU model file was not created at {model_path}")
         
         model_id = self._register_model(
             name='GRU',
@@ -1496,17 +1536,51 @@ class ModelTrainer:
     
     def _save_model_package(self, model, model_path, params):
         """Save model with preprocessing objects"""
-        package = {
-            'model': model,
-            'scaler': self.scaler,
-            'target_encoders': self.target_encoders,
-            'category_mappings': self.category_mappings,
-            'numeric_medians': self.numeric_medians,
-            'feature_names': self.feature_names,
-            'params': params,
-            'trained_at': datetime.now().isoformat()
-        }
-        joblib.dump(package, model_path)
+        try:
+            # Ensure directory exists
+            model_dir = os.path.dirname(model_path)
+            if model_dir:
+                os.makedirs(model_dir, exist_ok=True)
+                logger.debug(f"📁 Model directory verified: {model_dir}")
+            
+            # Verify we can write to the directory
+            if model_dir and not os.access(model_dir, os.W_OK):
+                logger.error(f"❌ No write permission for directory: {model_dir}")
+                return
+            
+            package = {
+                'model': model,
+                'scaler': self.scaler,
+                'target_encoders': self.target_encoders,
+                'category_mappings': self.category_mappings,
+                'numeric_medians': self.numeric_medians,
+                'feature_names': self.feature_names,
+                'params': params,
+                'trained_at': datetime.now().isoformat()
+            }
+            
+            logger.info(f"💾 Saving model to: {model_path}")
+            logger.debug(f"📦 Package contents: model type={type(model).__name__}, features={len(self.feature_names)}")
+            
+            # Save with joblib
+            joblib.dump(package, model_path)
+            
+            # Verify file was created and has content
+            if os.path.exists(model_path):
+                file_size = os.path.getsize(model_path)
+                if file_size > 0:
+                    logger.info(f"✅ Model saved successfully ({file_size / (1024 * 1024):.2f} MB)")
+                else:
+                    logger.error(f"❌ Model file is empty: {model_path}")
+            else:
+                logger.error(f"❌ Model file was not created at {model_path}")
+                # Try to list directory contents for debugging
+                if model_dir:
+                    logger.error(f"Directory contents: {os.listdir(model_dir)}")
+        except Exception as e:
+            logger.error(f"❌ Error saving model: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _log_model_completion(self, name, metrics, training_time, model_id):
         """Log model completion with formatted output"""
@@ -1548,7 +1622,7 @@ class ModelTrainer:
         query = """
             INSERT INTO ml_models (
                 id, name, model_type, algorithm, version, is_active,
-                model_path, mae, rmse, r2_score, mape, median_ae,
+                model_file_path, mae, rmse, r2_score, mape, median_ae,
                 percentile_90_error, training_time_seconds, hyperparameters,
                 feature_importances, created_at, updated_at
             ) VALUES (
@@ -1556,7 +1630,7 @@ class ModelTrainer:
             )
             ON CONFLICT (name) DO UPDATE SET
                 version = EXCLUDED.version,
-                model_path = EXCLUDED.model_path,
+                model_file_path = EXCLUDED.model_file_path,
                 mae = EXCLUDED.mae,
                 rmse = EXCLUDED.rmse,
                 r2_score = EXCLUDED.r2_score,
@@ -1779,14 +1853,25 @@ class ModelTrainer:
         try:
             # Update pending training run to 'running' status
             try:
+                # First get the pending run ID
                 self.cur.execute("""
-                    UPDATE model_training_runs 
-                    SET status = 'running'
+                    SELECT id FROM model_training_runs
                     WHERE status = 'pending'
-                    ORDER BY created_at DESC LIMIT 1
+                    ORDER BY created_at DESC
+                    LIMIT 1
                 """)
-                self.conn.commit()
-                logger.info("✅ Updated training status to 'running'")
+                pending_run = self.cur.fetchone()
+                
+                if pending_run:
+                    self.cur.execute("""
+                        UPDATE model_training_runs 
+                        SET status = 'running'
+                        WHERE id = %s
+                    """, (pending_run[0],))
+                    self.conn.commit()
+                    logger.info("✅ Updated training status to 'running'")
+                else:
+                    logger.info("ℹ️ No pending training run found")
             except Exception as e:
                 logger.warning(f"⚠️ Could not update training status: {e}")
                 if self.conn:
