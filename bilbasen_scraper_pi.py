@@ -38,7 +38,6 @@ import threading
 # ============================================================================
 
 CONFIG = {
-    # Fuel type IDs
     'FUEL_TYPES': {
         1: 'benzin',
         2: 'diesel',
@@ -49,11 +48,9 @@ CONFIG = {
         12: 'plugin_diesel'
     },
     
-    # Fuel types by era
     'OLD_CAR_FUEL_TYPES': [1, 2],
     'NEW_CAR_FUEL_TYPES': [1, 2, 3, 6, 8, 11, 12],
     
-    # Price ranges (DKK)
     'PRICE_RANGES': [
         (0, 25000),
         (25001, 50000),
@@ -371,7 +368,6 @@ class BilbasenScraper:
         
         result = {}
         
-        # Basic info
         result['external_id'] = listing.get('externalId')
         result['url'] = listing.get('canonicalUrl', car_url)
         result['brand'] = vehicle.get('make')
@@ -379,11 +375,9 @@ class BilbasenScraper:
         result['variant'] = vehicle.get('variant')
         result['title'] = f"{vehicle.get('make', '')} {vehicle.get('model', '')} {vehicle.get('variant', '')}".strip()
         
-        # Price
         price_info = listing.get('price', {})
         result['price'] = price_info.get('displayValue', '')
         
-        # Description
         result['description'] = listing.get('description', '')
         
         # Vehicle details

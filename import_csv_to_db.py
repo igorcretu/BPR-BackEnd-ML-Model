@@ -28,9 +28,7 @@ def clean_numeric(value_str, suffix=''):
     """Clean numeric values with optional suffix like 'km', 'hk', 'km/h', 'km/t'"""
     if pd.isna(value_str) or value_str == '' or value_str == '-':
         return None
-    # Remove Danish and English units
     value_str = str(value_str).replace(suffix, '').replace('km/t', '').replace('km/h', '').replace('kmh', '').replace('kg', '').replace('cm', '').strip()
-    # Remove thousand separators (.) then convert comma to decimal point
     value_str = value_str.replace('.', '').replace(',', '.')
     try:
         return int(float(value_str))
@@ -51,7 +49,7 @@ def clean_float(value_str):
 
 
 def standardize_fuel_type(fuel):
-    """Standardize fuel types to 7 categories"""
+    
     if pd.isna(fuel) or fuel == '':
         return None
     
@@ -69,7 +67,7 @@ def standardize_fuel_type(fuel):
     if 'hybrid' in fuel_original:
         return 'Hybrid - Diesel' if 'diesel' in fuel_original else 'Hybrid - Petrol'
     
-    return 'Petrol'  # Default
+    return 'Petrol'  
 
 
 def standardize_transmission(trans, fuel_type):
